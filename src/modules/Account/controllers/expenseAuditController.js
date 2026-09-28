@@ -359,6 +359,33 @@ export const checkoutVersion = async (req, res) => {
   } catch (error) { return sendError(res, error); }
 };
 
+export const deleteVersion = async (req, res) => {
+  try {
+    const companyId = req.params.companyId || req.body.companyId;
+    const financialYearEnding = Number(req.params.financialYearEnding || req.body.financialYearEnding || 0);
+    const Version = await getExpenseAuditVersionModel();
+    const Transaction = await getExpenseAuditTransactionModel();
+    const version = await Version.findOne({ _id: req.params.versionId || req.body.versionId, companyId, financialYearEnding }).lean();
+    if (!version) return res.status(404).json({ status: "error", message: "Version not found" });
+
+    const remainingVersions = await Version.find({ companyId, financialYearEnding, _id: { $ne: version._id } }).sort({ versionNumber: 1 }).lean();
+    const shouldReassignActive = Boolean(version.active);
+
+    await Transaction.deleteMany({ companyId, versionId: version._id });
+    await Version.deleteOne({ _id: version._id, companyId, financialYearEnding });
+
+    if (shouldReassignActive) {
+      await Version.updateMany({ companyId, financialYearEnding }, { $set: { active: false } });
+      if (remainingVersions.length) {
+        const fallbackVersion = remainingVersions[remainingVersions.length - 1];
+        await Version.updateOne({ _id: fallbackVersion._id, companyId, financialYearEnding }, { $set: { active: true } });
+      }
+    }
+
+    return res.json({ status: "success", data: { deletedVersionId: String(version._id), remainingVersions: remainingVersions.length }, message: "Upload instance deleted" });
+  } catch (error) { return sendError(res, error); }
+};
+
 export const getOverview = async (req, res) => {
   try {
     const endingYear = Number(req.query.financialYearEnding);

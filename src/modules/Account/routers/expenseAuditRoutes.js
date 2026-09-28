@@ -1,6 +1,6 @@
 import express from "express";
 import { protect } from "../../../middlewares/authMiddleware.js";
-import { checkoutVersion, createCategory, createIdentifier, deleteCategory, deleteIdentifier, getOverview, listCategories, listIdentifiers, listVersions, updateCategory, updateIdentifier, updateTransaction, updateTransactionCategory, uploadTransactions } from "../controllers/expenseAuditController.js";
+import { checkoutVersion, createCategory, createIdentifier, deleteCategory, deleteIdentifier, deleteVersion, getOverview, listCategories, listIdentifiers, listVersions, updateCategory, updateIdentifier, updateTransaction, updateTransactionCategory, uploadTransactions } from "../controllers/expenseAuditController.js";
 
 const router = express.Router();
 router.use(protect);
@@ -17,5 +17,6 @@ router.patch("/transactions/:id", updateTransaction);
 router.post("/upload", uploadTransactions);
 router.get("/versions/:companyId/:financialYearEnding", listVersions);
 router.post("/versions/:companyId/:financialYearEnding/checkout/:versionId", checkoutVersion);
+router.delete("/versions/:companyId/:financialYearEnding/:versionId", deleteVersion);
 router.get("/overview/:companyId", getOverview);
 export default router;
