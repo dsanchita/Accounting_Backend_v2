@@ -117,7 +117,11 @@ const normalizeInvoiceRow = (invoice) => {
   const paidAmount = round2(invoice.paidAmount);
   const recordedTdsAmount = round2(invoice.tdsAmount);
   const settledAmount = round2(paidAmount + recordedTdsAmount);
-  const totalGST = round2(invoice.totalGSTAmount || invoice.totalCGSTAmount + invoice.totalSGSTAmount + invoice.totalIGSTAmount);
+  const totalGST = round2(
+    invoice.totalGSTAmount ||
+      invoice.totalTaxAmount ||
+      invoice.totalCGSTAmount + invoice.totalSGSTAmount + invoice.totalIGSTAmount
+  );
   const settlementRatio = invoiceAmount > 0 ? Math.min(1, settledAmount / invoiceAmount) : 0;
   const totalIGST = round2(invoice.totalIGSTAmount);
   const totalCGST = round2(invoice.totalCGSTAmount);

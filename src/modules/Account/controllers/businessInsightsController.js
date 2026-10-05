@@ -342,7 +342,11 @@ const getBusinessInsightsData = async ({ companyId, financialYear, fromDate, toD
       $match: {
         "journalDoc.companyId": String(companyId),
         "journalDoc.isDeleted": { $ne: true },
-        "journalDoc.approvalStatus": "Approved",
+        "journalDoc.isReversed": { $ne: true },
+        $or: [
+          { "journalDoc.approvalStatus": "Approved" },
+          { "journalDoc.status": { $in: ["Posted", "Approved"] } },
+        ],
         "journalDoc.date": { $gte: startDate, $lte: endDate },
       },
     },
