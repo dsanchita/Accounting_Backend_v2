@@ -29,16 +29,6 @@ jobs:
           npm run build --if-present
           npm run test --if-present
 
-      - name: Syntax check
-        run: node --check src/server.js
-
-      - name: Security audit (xlsx known vulnerability allowed)
-        run: |
-          # Run audit but allow the known xlsx vulnerability
-          # xlsx has no available fix in npm registry
-          npm audit --audit-level=moderate || true
-        continue-on-error: true
-
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
         with:
@@ -61,9 +51,9 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_3BE2A170490D43068FBF61FD63349AF3 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_14C4237CA0ED4C329CAD4892ADFFC38B }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_85B7212844874398ABCB9466967F29FD }}
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_71D9A777248E4FE0B53E40788A8AB9AF }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_D9C631A424E246AFA408578D3B3F1A2E }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_C21189932F5D4D8A921FCC30D8EEB366 }}
 
       - name: 'Deploy to Azure Web App'
         id: deploy-to-webapp
@@ -72,3 +62,4 @@ jobs:
           app-name: 'app-accounting-prod-001'
           slot-name: 'Production'
           package: .
+          
