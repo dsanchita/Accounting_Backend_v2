@@ -1,6 +1,88 @@
 import AppError from "../../../utils/AppError.js";
 import { getTrialBalance, getTrialBalanceForPeriod } from "./trialBalanceService.js";
-import { SCHEDULE_III_CONFIG } from "../utils/scheduleIIIConfig.js";
+import {
+  getScheduleMappingForLineItem,
+  SCHEDULE_III_CONFIG,
+} from "../utils/scheduleIIIConfig.js";
+
+export const getFinancialYearStartDate = (date) => {
+  const asOfDate = new Date(date);
+  const year = asOfDate.getUTCFullYear();
+  const financialYearStartYear =
+    asOfDate.getUTCMonth() < 3 ? year - 1 : year;
+
+  return new Date(Date.UTC(financialYearStartYear, 3, 1));
+};
+
+export const calculateNetProfit = (totalRevenue, totalExpenses) =>
+  totalRevenue - totalExpenses;
+
+export const addProfitLossToReserves = (equityGroups, netProfit) => {
+  if (!Number.isFinite(netProfit)) {
+    throw new AppError("Net profit or loss must be a finite number", 500, "addProfitLossToReserves");
+  }
+
+  if (netProfit === 0) return 0;
+
+  const groupName = "Shareholders' Funds";
+  const lineItemName = "Reserves and Surplus";
+  const group = equityGroups[groupName] || { total: 0, items: [], lineItems: {} };
+  const lineItem = group.lineItems[lineItemName] || { total: 0, items: [] };
+  const adjustment = {
+    label: "Profit / (Loss) for the period",
+    groupName,
+    scheduleLineItem: lineItemName,
+    amount: netProfit,
+  };
+
+  lineItem.total += netProfit;
+  lineItem.items.push(adjustment);
+  group.lineItems[lineItemName] = lineItem;
+  group.total += netProfit;
+  group.items.push(adjustment);
+  equityGroups[groupName] = group;
+
+  return netProfit;
+};
+
+export const findUnmappedScheduleAccounts = (accounts) =>
+  accounts
+    .filter((account) => {
+      const expectedMapping = getScheduleMappingForLineItem(
+        account.groupNature,
+        account.scheduleLineItem
+      );
+
+      return (
+        !expectedMapping ||
+        account.scheduleMainHead !== expectedMapping.scheduleMainHead ||
+        account.scheduleGroup !== expectedMapping.scheduleGroup
+      );
+    })
+    .map((account) => ({
+      accountId: account.accountId,
+      accountCode: account.accountCode,
+      accountName: account.accountName,
+      groupName: account.groupName,
+      groupNature: account.groupNature,
+    }));
+
+export const calculateBalanceSheetTotals = (assets, liabilities, equity) => {
+  const totalAssets = assets.reduce((sum, account) => sum + account.amount, 0);
+  const totalLiabilities = liabilities.reduce((sum, account) => sum + account.amount, 0);
+  const totalEquity = equity.reduce((sum, account) => sum + account.amount, 0);
+  const totalEquityAndLiabilities = totalLiabilities + totalEquity;
+  const difference = totalAssets - totalEquityAndLiabilities;
+
+  return {
+    totalAssets,
+    totalLiabilities,
+    totalEquity,
+    totalEquityAndLiabilities,
+    difference,
+    isBalanced: Math.abs(difference) < 0.01,
+  };
+};
 
 /**
  * Financial Statement Service
@@ -23,11 +105,21 @@ export const getBalanceSheet = async (companyId, asOfDate, options = {}) => {
     throw new AppError("Company ID is required", 400, "getBalanceSheet");
   }
 
-  // Get trial balance
-  const trialBalance = await getTrialBalance(companyId, asOfDate, {
-    groupByScheduleHead: true,
-    includeZeroBalance: true,
-  });
+  const periodStartDate = options.periodStartDate
+    ? new Date(options.periodStartDate)
+    : getFinancialYearStartDate(asOfDate);
+  const profitAndLossPromise =
+    options.profitAndLoss ||
+    getProfitAndLoss(companyId, periodStartDate, new Date(asOfDate));
+
+  const [trialBalance, profitAndLoss] = await Promise.all([
+    getTrialBalance(companyId, asOfDate, {
+      groupByScheduleHead: true,
+      includeZeroBalance: true,
+    }),
+    profitAndLossPromise,
+  ]);
+  const mappingIssues = findUnmappedScheduleAccounts(trialBalance.accounts);
 
   // Filter and group accounts by sheet section
   const assets = [];
@@ -35,7 +127,13 @@ export const getBalanceSheet = async (companyId, asOfDate, options = {}) => {
   const equity = [];
 
   for (const account of trialBalance.accounts) {
-    if (!account.scheduleMainHead) continue;
+    if (
+      !account.scheduleMainHead ||
+      !account.scheduleGroup ||
+      !account.scheduleLineItem
+    ) {
+      continue;
+    }
 
     const accountLine = {
       accountId: account.accountId,
@@ -129,34 +227,42 @@ export const getBalanceSheet = async (companyId, asOfDate, options = {}) => {
     groupEquity[group].lineItems[lineItem].total += eq.amount;
   }
 
-  const totalAssets = assets.reduce((sum, a) => sum + a.amount, 0);
-  const totalLiabilities = liabilities.reduce((sum, l) => sum + l.amount, 0);
-  const totalEquity = equity.reduce((sum, e) => sum + e.amount, 0);
+  const profitTransferredToReserves = addProfitLossToReserves(
+    groupEquity,
+    profitAndLoss.profitAndLoss.netProfitBeforeTax
+  );
+
+  const totals = calculateBalanceSheetTotals(assets, liabilities, [
+    ...equity,
+    { amount: profitTransferredToReserves },
+  ]);
 
   const balanceSheet = {
     companyId,
     asOfDate,
+    profitTransferredToReserves,
     assets: {
       current: groupAssets["Current Assets"] || { items: [], total: 0 },
       nonCurrent: groupAssets["Non-Current Assets"] || { items: [], total: 0 },
-      total: totalAssets,
+      total: totals.totalAssets,
     },
     liabilitiesAndEquity: {
       equity: {
         shareholders: groupEquity["Shareholders' Funds"] || { items: [], total: 0 },
         other: groupEquity["Other"] || { items: [], total: 0 },
-        total: totalEquity,
+        total: totals.totalEquity,
       },
       liabilities: {
         current: groupLiabilities["Current Liabilities"] || { items: [], total: 0 },
         nonCurrent: groupLiabilities["Non-Current Liabilities"] || { items: [], total: 0 },
-        total: totalLiabilities,
+        total: totals.totalLiabilities,
       },
-      total: totalEquity + totalLiabilities,
+      total: totals.totalEquityAndLiabilities,
     },
     validation: {
-      assetsEqualLiabilitiesPlusEquity: Math.abs(totalAssets - (totalLiabilities + totalEquity)) < 0.01,
-      difference: totalAssets - (totalLiabilities + totalEquity),
+      assetsEqualLiabilitiesPlusEquity: totals.isBalanced,
+      difference: totals.difference,
+      mappingIssues,
     },
   };
 
@@ -284,7 +390,7 @@ export const getProfitAndLoss = async (companyId, startDate, endDate, options = 
   // Calculate totals
   const totalRevenue = revenue.reduce((sum, r) => sum + r.amount, 0);
   const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
-  const netProfit = totalRevenue - totalExpenses;
+  const netProfit = calculateNetProfit(totalRevenue, totalExpenses);
 
   const pnl = {
     companyId,
@@ -330,13 +436,15 @@ export const getProfitAndLoss = async (companyId, startDate, endDate, options = 
  */
 export const getFinancialStatements = async (companyId, statementDate) => {
   const asOfDate = new Date(statementDate);
-  const periodStart = new Date(asOfDate);
-  periodStart.setMonth(0);
-  periodStart.setDate(1);
+  const periodStart = getFinancialYearStartDate(asOfDate);
 
+  const profitAndLossPromise = getProfitAndLoss(companyId, periodStart, asOfDate);
   const [balanceSheet, profitAndLoss] = await Promise.all([
-    getBalanceSheet(companyId, asOfDate),
-    getProfitAndLoss(companyId, periodStart, asOfDate),
+    getBalanceSheet(companyId, asOfDate, {
+      periodStartDate: periodStart,
+      profitAndLoss: profitAndLossPromise,
+    }),
+    profitAndLossPromise,
   ]);
 
   // Calculate key financial ratios

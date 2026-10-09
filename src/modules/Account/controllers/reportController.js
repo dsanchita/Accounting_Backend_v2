@@ -244,12 +244,12 @@ export const validateTrialBalanceHandler = async (req, res, next) => {
 
 /**
  * Get balance sheet
- * GET /api/accounting/report/:companyId/balance-sheet?asOfDate=xxx
+ * GET /api/accounting/report/:companyId/balance-sheet?asOfDate=xxx&periodStartDate=xxx
  */
 export const getBalanceSheetHandler = async (req, res, next) => {
   try {
     const { companyId } = req.params;
-    const { asOfDate } = req.query;
+    const { asOfDate, periodStartDate } = req.query;
 
     if (!companyId) {
       throw new AppError("Company ID is required", 400, "getBalanceSheetHandler");
@@ -259,7 +259,9 @@ export const getBalanceSheetHandler = async (req, res, next) => {
       throw new AppError("As of date is required", 400, "getBalanceSheetHandler");
     }
 
-    const report = await getBalanceSheet(companyId, new Date(asOfDate));
+    const report = await getBalanceSheet(companyId, new Date(asOfDate), {
+      ...(periodStartDate ? { periodStartDate: new Date(periodStartDate) } : {}),
+    });
 
     // Audit log
     await createAuditLog({
@@ -269,7 +271,7 @@ export const getBalanceSheetHandler = async (req, res, next) => {
       userId: req.user?.id,
       userEmail: req.user?.email,
       userRole: req.user?.role,
-      changes: { asOfDate },
+      changes: { asOfDate, periodStartDate },
       description: `Balance sheet generated as of ${asOfDate}`,
     });
 

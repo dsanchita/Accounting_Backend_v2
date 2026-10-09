@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
+    "migrate:account-party-indexes": "node scripts/migrateAccountPartyIndexes.js",
     "test": "echo \"No tests specified yet\" && exit 0"
   },
   "keywords": [],
