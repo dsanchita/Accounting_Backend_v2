@@ -82,12 +82,10 @@ const accountSchema = new mongoose.Schema(
     linkedClientId: {
       type: String,
       default: null,
-      sparse: true,
     },
     linkedVendorId: {
       type: String,
       default: null,
-      sparse: true,
     },
     // Denormalized party info for reporting efficiency
     linkedPartyType: {
@@ -124,14 +122,22 @@ const accountSchema = new mongoose.Schema(
 // Compound unique index on code + companyId
 accountSchema.index({ code: 1, companyId: 1 }, { unique: true });
 
-// Sparse unique indexes for linked accounts
+// Only linked-party accounts participate in uniqueness; ordinary accounts store null here.
 accountSchema.index(
   { linkedClientId: 1, companyId: 1 },
-  { sparse: true, unique: true }
+  {
+    name: "uniq_linkedClientId_companyId_nonnull",
+    unique: true,
+    partialFilterExpression: { linkedClientId: { $type: "string" } },
+  }
 );
 accountSchema.index(
   { linkedVendorId: 1, companyId: 1 },
-  { sparse: true, unique: true }
+  {
+    name: "uniq_linkedVendorId_companyId_nonnull",
+    unique: true,
+    partialFilterExpression: { linkedVendorId: { $type: "string" } },
+  }
 );
 
 export const getAccountModel = async () => {
