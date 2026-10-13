@@ -39,7 +39,19 @@ const auditLogSchema = new mongoose.Schema({
   // Action Information
   action: {
     type: String,
-    enum: ["CREATE", "UPDATE", "DELETE", "APPROVE", "REJECT", "STATUS_CHANGE", "EXPORT", "IMPORT"],
+    enum: [
+      "CREATE",
+      "UPDATE",
+      "DELETE",
+      "APPROVE",
+      "REJECT",
+      "STATUS_CHANGE",
+      "EXPORT",
+      "IMPORT",
+      "POST_SALES_JOURNAL",
+      "CREATE_APPROVE",
+      "UPDATE_APPROVE",
+    ],
     required: true,
     index: true,
   },

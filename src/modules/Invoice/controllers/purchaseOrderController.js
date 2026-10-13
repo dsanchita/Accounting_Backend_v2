@@ -70,11 +70,22 @@ const generatePONumber = async (companyId, vendorName = "", poDate = new Date())
       "vendor.name": vendorName,
     });
 
-    // Sequential number: pad with zeros (e.g., 00001, 00002)
-    // This ensures the sequence never resets and is unique per vendor
-    const sequenceNumber = String(countForVendor + 1).padStart(5, "0");
+    // Sequential number: counter starts from 10002
+    const baseCounter = 10002 + countForVendor;
+    let sequenceNumber = String(baseCounter);
+    let poNumber = `PO-${dateStr}-${clientCode}-${sequenceNumber}`;
 
-    return `PO-${dateStr}-${clientCode}-${sequenceNumber}`;
+    // Ensure uniqueness in case of race condition or existing PO
+    let exists = await PurchaseOrder.findOne({ poNumber, companyId });
+    let attempts = 0;
+    while (exists && attempts < 100) {
+      attempts++;
+      sequenceNumber = String(baseCounter + attempts);
+      poNumber = `PO-${dateStr}-${clientCode}-${sequenceNumber}`;
+      exists = await PurchaseOrder.findOne({ poNumber, companyId });
+    }
+
+    return poNumber;
   } catch (error) {
     console.error("Error generating PO number:", error);
     // Fallback to timestamp-based format

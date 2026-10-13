@@ -62,7 +62,7 @@ export const getAuditLogsController = async (req, res, next) => {
         email: log.performedByEmail || "Unknown",
         role: log.performedByRole || "Unknown",
       },
-      module: log.module,
+      module: log.module || (log.entityType ? log.entityType.toUpperCase() : "GENERAL"),
       description: log.description,
       status: log.status,
       changeCount: Array.isArray(log.changes) ? log.changes.length : 0,
@@ -384,38 +384,53 @@ const transformChanges = (changes, entityType = null) => {
 
   // Handle if changes is an array (from logs)
   if (Array.isArray(changes)) {
-    return changes.map((change) => ({
-      field: change.field,
-      fieldLabel: getFieldLabel(change.field, entityType),
-      oldValue: formatValue(change.oldValue),
-      newValue: formatValue(change.newValue),
-      changeType: determineChangeType(change.oldValue, change.newValue),
-      icon: getChangeIcon(determineChangeType(change.oldValue, change.newValue)),
-      color: getChangeColor(determineChangeType(change.oldValue, change.newValue)),
-      description: getChangeDescription(
-        getFieldLabel(change.field, entityType),
-        formatValue(change.oldValue),
-        formatValue(change.newValue),
-        determineChangeType(change.oldValue, change.newValue)
-      ),
-    }));
+    return changes
+      .filter((change) => change && typeof change === "object")
+      .map((change) => ({
+        field: change.field,
+        fieldLabel: getFieldLabel(change.field, entityType),
+        oldValue: formatValue(change.oldValue),
+        newValue: formatValue(change.newValue),
+        changeType: determineChangeType(change.oldValue, change.newValue),
+        icon: getChangeIcon(determineChangeType(change.oldValue, change.newValue)),
+        color: getChangeColor(determineChangeType(change.oldValue, change.newValue)),
+        description: getChangeDescription(
+          getFieldLabel(change.field, entityType),
+          formatValue(change.oldValue),
+          formatValue(change.newValue),
+          determineChangeType(change.oldValue, change.newValue)
+        ),
+      }));
   }
 
-  // Handle if changes is an object (from oldValues/newValues)
+  // Handle if changes is an object (from oldValues/newValues or key-value updates)
   if (typeof changes === "object") {
     return Object.entries(changes).map(([field, changeObj]) => {
-      const oldVal =
-        changeObj.oldValue !== undefined
+      const isChangeObject =
+        changeObj !== null &&
+        typeof changeObj === "object" &&
+        !Array.isArray(changeObj) &&
+        !(changeObj instanceof Date) &&
+        (changeObj.oldValue !== undefined ||
+          changeObj.newValue !== undefined ||
+          changeObj.old !== undefined ||
+          changeObj.new !== undefined);
+
+      const oldVal = isChangeObject
+        ? changeObj.oldValue !== undefined
           ? changeObj.oldValue
           : changeObj.old !== undefined
             ? changeObj.old
-            : null;
-      const newVal =
-        changeObj.newValue !== undefined
+            : null
+        : null;
+
+      const newVal = isChangeObject
+        ? changeObj.newValue !== undefined
           ? changeObj.newValue
           : changeObj.new !== undefined
             ? changeObj.new
-            : null;
+            : null
+        : changeObj;
 
       return {
         field,
