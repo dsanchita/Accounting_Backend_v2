@@ -58,9 +58,40 @@ const getChangedFields = (oldDoc = {}, nextData = {}) =>
       newValue: nextData?.[key],
     }));
 
-const generateInvoiceNumber = async (companyId) => {
-  const timestamp = Date.now();
-  return `INV-${companyId.toString().slice(-4)}-${timestamp}`;
+import { getInvoiceModel } from "../models/Invoice.js";
+
+const generateInvoiceNumber = async (companyId, invoiceDate = new Date()) => {
+  try {
+    const date = new Date(invoiceDate);
+    const yy = String(date.getFullYear()).slice(-2);
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const dd = String(date.getDate()).padStart(2, "0");
+    const dateStr = `${yy}${mm}${dd}`;
+
+    const Invoice = await getInvoiceModel();
+    const count = await Invoice.countDocuments({ companyId });
+    const counter = 51438 + count;
+
+    let invoiceNo = `INV-${dateStr}-${counter}`;
+
+    // Ensure uniqueness in case of race condition or existing invoice
+    let exists = await Invoice.findOne({ invoiceNo, companyId });
+    let attempts = 0;
+    while (exists && attempts < 100) {
+      attempts++;
+      invoiceNo = `INV-${dateStr}-${counter + attempts}`;
+      exists = await Invoice.findOne({ invoiceNo, companyId });
+    }
+
+    return invoiceNo;
+  } catch (error) {
+    console.error("Error generating invoice number:", error);
+    const date = new Date();
+    const yy = String(date.getFullYear()).slice(-2);
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const dd = String(date.getDate()).padStart(2, "0");
+    return `INV-${yy}${mm}${dd}-${Date.now().toString().slice(-5)}`;
+  }
 };
 
 const generateJournalNumber = (companyId) => {
@@ -360,14 +391,14 @@ export const createInvoice = async (req, res, next) => {
         ...item,
       };
       const normalizedTax = normalizeLineItemTax(sourceItem, {
-        taxType: bodyTaxType || linkedPOData?.taxType || matchedPOItem?.taxType,
-        taxLabel: bodyTaxLabel || linkedPOData?.taxLabel || matchedPOItem?.taxLabel,
-        taxRate: matchedPOItem?.taxRate ?? matchedPOItem?.gstRate,
-        taxAmount: matchedPOItem?.taxAmount ?? matchedPOItem?.gstAmount,
-        gstRate: matchedPOItem?.gstRate,
-        gstAmount: matchedPOItem?.gstAmount,
-        amount: matchedPOItem?.taxAmount ?? matchedPOItem?.gstAmount,
-        rate: matchedPOItem?.taxRate ?? matchedPOItem?.gstRate,
+        taxType: bodyTaxType || linkedPOData?.taxType || matchedPOItem?.taxType || item.taxType || "GST",
+        taxLabel: bodyTaxLabel || linkedPOData?.taxLabel || matchedPOItem?.taxLabel || item.taxLabel || "GST",
+        taxRate: matchedPOItem?.taxRate ?? matchedPOItem?.gstRate ?? item.gstRate ?? item.taxRate,
+        taxAmount: matchedPOItem?.taxAmount ?? matchedPOItem?.gstAmount ?? item.gstAmount ?? item.taxAmount,
+        gstRate: matchedPOItem?.gstRate ?? item.gstRate,
+        gstAmount: matchedPOItem?.gstAmount ?? item.gstAmount,
+        amount: matchedPOItem?.taxAmount ?? matchedPOItem?.gstAmount ?? item.gstAmount ?? item.taxAmount,
+        rate: matchedPOItem?.taxRate ?? matchedPOItem?.gstRate ?? item.gstRate ?? item.taxRate,
         gstSplit,
       });
       const taxableValue = Number(item.taxableValue ?? matchedPOItem?.taxableValue ?? 0);
@@ -393,7 +424,7 @@ export const createInvoice = async (req, res, next) => {
       items: normalizedItems,
     });
 
-    const invoiceNumber = await generateInvoiceNumber(companyId);
+    const invoiceNumber = await generateInvoiceNumber(companyId, invoiceDate);
     const normalizedMilestones = Array.isArray(milestones)
       ? milestones.map((milestone, index) => ({
         ...milestone,
@@ -425,8 +456,8 @@ export const createInvoice = async (req, res, next) => {
     const invoiceData = {
       companyId,
       invoiceNo: invoiceNumber,
-      linkedPO,
-      poNumber: req.body.poNumber || linkedPOData?.poNumber,
+      linkedPO: linkedPO ? toMongoId(linkedPO) : null,
+      poNumber: req.body.poNumber || linkedPOData?.poNumber || req.body.linkedPORef || req.body.poreferencevalue || "",
       invoiceDate: new Date(invoiceDate),
       dueDate: new Date(dueDate),
       billTo,
@@ -460,8 +491,8 @@ export const createInvoice = async (req, res, next) => {
     const invoice = await createInvoiceRepo(invoiceData);
 
     // If linked to PO, update PO with invoice reference
-    if (linkedPO) {
-      await syncPurchaseOrderFromInvoicesRepo(linkedPO, req.user?.id);
+    if (invoiceData.linkedPO) {
+      await syncPurchaseOrderFromInvoicesRepo(invoiceData.linkedPO, req.user?.id);
     }
 
     await createAuditLog({
@@ -624,6 +655,9 @@ export const updateInvoice = async (req, res, next) => {
     ]);
 
     let normalizedUpdateData = { ...updateData };
+    if (normalizedUpdateData.linkedPO !== undefined) {
+      normalizedUpdateData.linkedPO = normalizedUpdateData.linkedPO ? toMongoId(normalizedUpdateData.linkedPO) : null;
+    }
     if (Array.isArray(normalizedUpdateData.items) || Array.isArray(normalizedUpdateData.taxSummary)) {
       if (Array.isArray(normalizedUpdateData.items)) {
         const effectiveBillTo = normalizedUpdateData.billTo || oldInvoice.billTo || linkedPOData?.vendor;
@@ -915,7 +949,7 @@ export const approveInvoice = async (req, res, next) => {
     const userName = req.user?.name || "System User";
     if (invoice.createdBy) {
       emitNotification({
-        companyId: req.companyId,
+        companyId: invoice.companyId || req.companyId || req.user?.company?._id || req.user?.companyId,
         recipientId: invoice.createdBy.toString(),
         title: "Invoice Approved",
         message: `Your invoice ${invoice.invoiceNo} has been approved by ${userName}.`,
@@ -1006,7 +1040,7 @@ export const rejectInvoice = async (req, res, next) => {
     const userName = req.user?.name || "System User";
     if (invoice.createdBy) {
       emitNotification({
-        companyId: req.companyId,
+        companyId: invoice.companyId || req.companyId || req.user?.company?._id || req.user?.companyId,
         recipientId: invoice.createdBy.toString(),
         title: "Invoice Rejected",
         message: `Your invoice ${invoice.invoiceNo} has been rejected by ${userName}. Reason: ${reason}`,
@@ -1246,7 +1280,8 @@ export const createInvoiceWithJournal = async (req, res, next) => {
     const invoiceData = {
       companyId,
       invoiceNo: invoiceNumber,
-      linkedPO,
+      linkedPO: linkedPO ? toMongoId(linkedPO) : null,
+      poNumber: req.body.poNumber || req.body.linkedPORef || req.body.poreferencevalue || "",
       invoiceDate: new Date(invoiceDate),
       dueDate: new Date(dueDate),
       billTo,
