@@ -62,7 +62,7 @@ export const getAuditLogsController = async (req, res, next) => {
         email: log.performedByEmail || "Unknown",
         role: log.performedByRole || "Unknown",
       },
-      module: log.module,
+      module: log.module || (log.entityType ? log.entityType.toUpperCase() : "GENERAL"),
       description: log.description,
       status: log.status,
       changeCount: Array.isArray(log.changes) ? log.changes.length : 0,

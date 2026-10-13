@@ -48,7 +48,7 @@ export const createAuditLog = async (auditData) => {
       userAgent: auditData.userAgent,
       status: auditData.status || "SUCCESS",
       errorMessage: auditData.errorMessage,
-      module: auditData.module,
+      module: auditData.module || (auditData.entityType ? auditData.entityType.toUpperCase() : "GENERAL"),
       description: auditData.description,
       relatedEntities: auditData.relatedEntities,
       timestamp: new Date(),

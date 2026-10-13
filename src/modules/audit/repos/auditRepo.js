@@ -52,7 +52,12 @@ export const findAuditLogsByCompanyId = async (
 
     // Module filtering
     if (module) {
-      query.module = module;
+      query.$or = [
+        { module: module },
+        { module: module.toUpperCase() },
+        { module: null, entityType: new RegExp(`^${module}$`, "i") },
+        { module: { $exists: false }, entityType: new RegExp(`^${module}$`, "i") },
+      ];
     }
 
     // Entity type filtering

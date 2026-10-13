@@ -504,6 +504,7 @@ export const createInvoice = async (req, res, next) => {
       userEmail: req.user?.email,
       userRole: req.user?.role,
       changes: invoiceData,
+      module: "INVOICE",
       description: `Invoice created: ${invoice.invoiceNo}`,
     });
     
@@ -560,7 +561,13 @@ export const getAllInvoices = async (req, res, next) => {
 
     const filter = { companyId };
     if (status) filter.status = status;
-    if (approvalStatus) filter.approvalStatus = approvalStatus;
+    if (approvalStatus) {
+      if (approvalStatus.includes(",")) {
+        filter.approvalStatus = { $in: approvalStatus.split(",").map((s) => s.trim()) };
+      } else {
+        filter.approvalStatus = approvalStatus;
+      }
+    }
 
     // Advanced Filters
     if (invoiceNo) filter.invoiceNo = { $regex: invoiceNo, $options: "i" };
@@ -747,6 +754,7 @@ export const updateInvoice = async (req, res, next) => {
       userRole: req.user?.role,
       changes: normalizedUpdateData,
       oldValues: oldInvoice,
+      module: "INVOICE",
       description: `Invoice updated: ${oldInvoice.invoiceNo}`,
     });
 
@@ -786,6 +794,7 @@ export const deleteInvoice = async (req, res, next) => {
       userEmail: req.user?.email,
       userRole: req.user?.role,
       changes: invoice,
+      module: "INVOICE",
       description: `Invoice deleted: ${invoice.invoiceNo}`,
     });
 
@@ -942,6 +951,7 @@ export const approveInvoice = async (req, res, next) => {
       userEmail: req.user?.email,
       userRole: req.user?.role,
       changes: updateData,
+      module: "INVOICE",
       description: `Invoice approved: ${invoice.invoiceNo}`,
     });
     
@@ -1033,6 +1043,7 @@ export const rejectInvoice = async (req, res, next) => {
       userEmail: req.user?.email,
       userRole: req.user?.role,
       changes: updateData,
+      module: "INVOICE",
       description: `Invoice rejected: ${invoice.invoiceNo}`,
     });
     
@@ -1093,6 +1104,7 @@ export const recordPayment = async (req, res, next) => {
         paymentDate,
         reference,
       },
+      module: "INVOICE",
       description: `Payment recorded on Invoice: ${invoice.invoiceNo}`,
     });
 
@@ -1154,6 +1166,7 @@ export const exportInvoiceById = async (req, res, next) => {
       userEmail: req.user?.email,
       userRole: req.user?.role,
       changes: { format },
+      module: "INVOICE",
       description: `Invoice ${invoice.invoiceNo} exported as ${format}`,
     });
 
