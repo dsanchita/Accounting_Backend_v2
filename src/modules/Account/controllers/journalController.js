@@ -272,7 +272,7 @@ export const createJournal = async (req, res, next) => {
       totalCredit,
       status: "Posted",
       approvalStatus: "Approved",
-      createdBy: req.user?.id,
+      createdBy: req.user?.id || req.user?._id?.toString() || req.body?.createdBy,
     };
 
     const journal = await createJournalRepo(journalData);
