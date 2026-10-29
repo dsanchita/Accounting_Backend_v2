@@ -47,6 +47,52 @@ const attachLinesToJournals = async (journals = []) => {
   }));
 };
 
+const attachUsersToJournals = async (journals = []) => {
+  if (!journals.length) return journals;
+
+  try {
+    const { getUserModel } = await import("../../user/models/User.js");
+    const User = await getUserModel();
+
+    const rawUserIds = journals
+      .flatMap((j) => [j.createdBy, j.updatedBy, j.approvedBy])
+      .filter(Boolean)
+      .map((id) => (typeof id === "object" ? id._id || id.id : id))
+      .filter((id) => id && mongoose.Types.ObjectId.isValid(String(id)))
+      .map(String);
+
+    const userIds = [...new Set(rawUserIds)];
+
+    let userMap = new Map();
+    if (userIds.length > 0) {
+      const users = await User.find({ _id: { $in: userIds } })
+        .select("name email role")
+        .lean();
+      userMap = new Map(users.map((u) => [String(u._id), u]));
+    }
+
+    const resolveUser = (val) => {
+      if (!val) return null;
+      if (typeof val === "object" && val.name) return val;
+      const idStr = String(typeof val === "object" ? val._id || val.id || "" : val);
+      if (userMap.has(idStr)) return userMap.get(idStr);
+      if (typeof val === "object") return val;
+      if (!mongoose.Types.ObjectId.isValid(val)) return { name: val };
+      return { _id: val, name: "System" };
+    };
+
+    return journals.map((j) => ({
+      ...j,
+      createdBy: resolveUser(j.createdBy),
+      updatedBy: resolveUser(j.updatedBy),
+      approvedBy: resolveUser(j.approvedBy),
+    }));
+  } catch (error) {
+    console.error("Error attaching users to journals:", error);
+    return journals;
+  }
+};
+
 
 export const createJournalRepo = async (journalData) => {
   try {
@@ -70,9 +116,9 @@ export const getJournalByIdRepo = async (id) => {
     const Journal = await getJournalModel();
     const journal = await Journal.findById(id).lean();
     if (!journal) return null;
-    if (!journal) return null;
     const [journalWithLines] = await attachLinesToJournals([journal]);
-    return journalWithLines;
+    const [journalWithUsers] = await attachUsersToJournals([journalWithLines]);
+    return journalWithUsers;
   } catch (error) {
     if (error instanceof AppError) {
       throw error;
@@ -85,7 +131,8 @@ export const getJournalsRepo = async (filter = {}) => {
   try {
     const Journal = await getJournalModel();
     const journals = await Journal.find(filter).sort({ date: -1 }).lean();
-    return await attachLinesToJournals(journals);
+    const withLines = await attachLinesToJournals(journals);
+    return await attachUsersToJournals(withLines);
   } catch (error) {
     throw new AppError(error.message || "Error retrieving journals", 500, "getJournalsRepo");
   }
@@ -148,7 +195,8 @@ export const getJournalsByApprovalStatusRepo = async (companyId, status) => {
     })
       .sort({ createdAt: -1 })
       .lean();
-    return await attachLinesToJournals(journals);
+    const withLines = await attachLinesToJournals(journals);
+    return await attachUsersToJournals(withLines);
   } catch (error) {
     throw new AppError(
       error.message || "Error retrieving journals by approval status",
