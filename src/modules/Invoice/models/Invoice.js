@@ -273,6 +273,9 @@ const invoiceSchema = new mongoose.Schema(
     // Payment schedules
     paymentSchedules: [paymentScheduleSchema],
 
+    // Monthly billing tracking
+    monthlyBillingInfo: { type: mongoose.Schema.Types.Mixed },
+
     // Approval
     approvalStatus: {
       type: String,

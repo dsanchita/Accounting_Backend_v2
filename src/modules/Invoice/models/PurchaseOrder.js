@@ -199,6 +199,7 @@ const purchaseOrderSchema = new mongoose.Schema(
     },
 
     paymentSchedule: { type: String },
+    distributionSchedule: { type: [mongoose.Schema.Types.Mixed], default: [] },
     staffingConfig: { type: mongoose.Schema.Types.Mixed },
 
     vendor: { type: addressSchema, required: true },
