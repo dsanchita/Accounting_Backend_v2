@@ -485,6 +485,7 @@ export const createInvoice = async (req, res, next) => {
       invoiceNo: invoiceNumber,
       linkedPO: linkedPO ? toMongoId(linkedPO) : null,
       poNumber: req.body.poNumber || linkedPOData?.poNumber || req.body.linkedPORef || req.body.poreferencevalue || "",
+      poreferencevalue: req.body.poreferencevalue || linkedPOData?.poreferencevalue || "",
       invoiceDate: new Date(invoiceDate),
       dueDate: new Date(dueDate),
       billTo,
@@ -1298,8 +1299,9 @@ export const createInvoiceWithJournal = async (req, res, next) => {
     }
     validateInvoiceItemQuantities(items, "createInvoiceWithJournal");
 
+    let linkedPOData = null;
     if (linkedPO) {
-      const linkedPOData = await getPurchaseOrderByIdRepo(linkedPO);
+      linkedPOData = await getPurchaseOrderByIdRepo(linkedPO);
       if (linkedPOData?.approvalStatus !== "Approved") {
         throw new AppError("Invoice can be created only for approved purchase orders", 400, "createInvoiceWithJournal");
       }
@@ -1328,7 +1330,8 @@ export const createInvoiceWithJournal = async (req, res, next) => {
       companyId,
       invoiceNo: invoiceNumber,
       linkedPO: linkedPO ? toMongoId(linkedPO) : null,
-      poNumber: req.body.poNumber || req.body.linkedPORef || req.body.poreferencevalue || "",
+      poNumber: req.body.poNumber || linkedPOData?.poNumber || req.body.linkedPORef || req.body.poreferencevalue || "",
+      poreferencevalue: req.body.poreferencevalue || linkedPOData?.poreferencevalue || "",
       invoiceDate: new Date(invoiceDate),
       dueDate: new Date(dueDate),
       billTo,
