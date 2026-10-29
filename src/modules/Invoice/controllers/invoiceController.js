@@ -46,6 +46,27 @@ import { postSalesJournalForInvoice } from "./invoiceAccountingController.js";
 
 const toMongoId = (value) => value?._id || value || null;
 
+const validateInvoiceItemQuantities = (items, origin) => {
+  const invalidIndex = items.findIndex((item) => {
+    const quantity = item?.quantity;
+    return (
+      quantity === undefined ||
+      quantity === null ||
+      String(quantity).trim() === "" ||
+      !Number.isFinite(Number(quantity)) ||
+      Number(quantity) <= 0
+    );
+  });
+
+  if (invalidIndex !== -1) {
+    throw new AppError(
+      `Item ${invalidIndex + 1}: quantity is required and must be greater than 0`,
+      400,
+      origin
+    );
+  }
+};
+
 const toPlainObject = (doc) => JSON.parse(JSON.stringify(doc || {}));
 
 const getChangedFields = (oldDoc = {}, nextData = {}) =>
@@ -369,6 +390,11 @@ export const createInvoice = async (req, res, next) => {
         "createInvoice"
       );
     }
+
+    if (!Array.isArray(items)) {
+      throw new AppError("Invoice items must be an array", 400, "createInvoice");
+    }
+    validateInvoiceItemQuantities(items, "createInvoice");
 
     const [linkedPOData, company] = await Promise.all([
       linkedPO ? getPurchaseOrderByIdRepo(linkedPO) : Promise.resolve(null),
@@ -1263,6 +1289,11 @@ export const createInvoiceWithJournal = async (req, res, next) => {
         "createInvoiceWithJournal"
       );
     }
+
+    if (!Array.isArray(items)) {
+      throw new AppError("Invoice items must be an array", 400, "createInvoiceWithJournal");
+    }
+    validateInvoiceItemQuantities(items, "createInvoiceWithJournal");
 
     if (linkedPO) {
       const linkedPOData = await getPurchaseOrderByIdRepo(linkedPO);

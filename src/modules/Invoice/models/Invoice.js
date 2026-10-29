@@ -20,7 +20,14 @@ const invoiceLineItemSchema = new mongoose.Schema({
   milestoneIndex: { type: Number },
   description: { type: String, required: true },
   hsnSac: { type: String },
-  quantity: { type: Number, required: true, min: 0 },
+  quantity: {
+    type: Number,
+    required: true,
+    validate: {
+      validator: (value) => value > 0,
+      message: "Quantity must be greater than 0",
+    },
+  },
   rate: { type: Number, required: true, min: 0 },
   taxableValue: { type: Number, required: true, min: 0 },
   taxType: { type: String, default: "GST" },
