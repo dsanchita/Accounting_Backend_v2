@@ -925,12 +925,115 @@ export const listOpenEmployeePayables = async (req, res, next) => {
     const config = await Config.findOne({ key: "HRMS", companyId, isActive: true }).lean();
     if (!config) return res.status(409).json({ success: false, message: "HRMS mappings are not configured for this company" });
     const Payable = await getEmployeePayableModel();
-    const payables = await Payable.find({
-      companyId,
-      status: { $in: ["OPEN", "PARTIAL"] },
-      $expr: { $gt: ["$originalAmountMinorUnits", "$settledAmountMinorUnits"] },
-    }).sort({ createdAt: 1 }).lean();
+    
+    const filter = { companyId };
+    const statusQuery = String(req.query.status || "").toUpperCase();
+    if (statusQuery === "ALL") {
+      // return all statuses
+    } else if (["OPEN", "PARTIAL", "SETTLED"].includes(statusQuery)) {
+      filter.status = statusQuery;
+    } else {
+      filter.status = { $in: ["OPEN", "PARTIAL"] };
+      filter.$expr = { $gt: ["$originalAmountMinorUnits", "$settledAmountMinorUnits"] };
+    }
+    if (req.query.search) {
+      const searchRegex = new RegExp(String(req.query.search).trim(), "i");
+      filter.$or = [
+        { employeeName: searchRegex },
+        { employeeCode: searchRegex },
+        { paymentId: searchRegex },
+        { sourceId: searchRegex },
+      ];
+    }
+    const payables = await Payable.find(filter).sort({ createdAt: -1 }).lean();
     res.json({ success: true, data: payables });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getSalaryRecords = async (req, res, next) => {
+  try {
+    const companyId = String(req.query.companyId || req.params.companyId || "");
+    if (!companyId) return res.status(400).json({ success: false, message: "companyId is required" });
+
+    const Journal = await getJournalModel();
+    const JournalLine = await getJournalLineModel();
+
+    const journals = await Journal.find({
+      companyId,
+      sourceType: { $in: ["HRMS_PAYROLL", "HRMS_SETTLEMENT"] },
+    }).sort({ date: -1, createdAt: -1 }).lean();
+
+    const journalIds = journals.map((j) => j._id);
+    const lines = await JournalLine.find({
+      companyId,
+      journalId: { $in: journalIds },
+    }).sort({ lineNumber: 1, createdAt: 1 }).lean();
+
+    const linesByJournal = new Map();
+    for (const line of lines) {
+      const jId = String(line.journalId);
+      if (!linesByJournal.has(jId)) linesByJournal.set(jId, []);
+      linesByJournal.get(jId).push(line);
+    }
+
+    const records = journals.map((journal) => {
+      const jLines = linesByJournal.get(String(journal._id)) || [];
+      const employeeMap = new Map();
+
+      for (const line of jLines) {
+        if (!line.employeeName && !line.paymentId) continue;
+        const key = line.paymentId || line.employeeId || line.employeeName;
+        if (!employeeMap.has(key)) {
+          employeeMap.set(key, {
+            employeeId: line.employeeId,
+            employeeName: line.employeeName,
+            employeeCode: line.employeeCode,
+            employeeDepartment: line.employeeDepartment,
+            employeeDesignation: line.employeeDesignation,
+            paymentId: line.paymentId,
+            grossSalary: 0,
+            netSalary: 0,
+            deductions: [],
+            settledAmount: 0,
+          });
+        }
+        const emp = employeeMap.get(key);
+        if (line.debitAmount > 0 && line.accountCode === "SALARY") {
+          emp.grossSalary += line.debitAmount;
+        } else if (line.creditAmount > 0 && line.accountCode === "OUTSTANDINGS") {
+          emp.netSalary += line.creditAmount;
+        } else if (line.creditAmount > 0 && line.accountCode !== "OUTSTANDINGS") {
+          emp.deductions.push({
+            accountCode: line.accountCode,
+            accountName: line.accountName,
+            amount: line.creditAmount,
+          });
+        } else if (line.debitAmount > 0 && line.accountCode === "OUTSTANDINGS") {
+          emp.settledAmount += line.debitAmount;
+        }
+      }
+
+      return {
+        journalId: journal._id,
+        journalNumber: journal.number,
+        voucherType: journal.voucherType,
+        sourceType: journal.sourceType,
+        sourceId: journal.sourceId,
+        date: journal.date,
+        narration: journal.narration,
+        totalAmount: journal.totalDebit || journal.totalCredit || 0,
+        employees: Array.from(employeeMap.values()),
+        lines: jLines,
+      };
+    });
+
+    res.json({
+      success: true,
+      count: records.length,
+      data: records,
+    });
   } catch (error) {
     next(error);
   }

@@ -7,6 +7,7 @@ import {
   getIntegrationEvent,
   getMappings,
   getEmployeePayableReconciliation,
+  getSalaryRecords,
   listEmployeePayablesAdmin,
   listEmployeeSettlements,
   listOpenEmployeePayables,
@@ -55,6 +56,12 @@ router.get(
   protect,
   accessControlMiddleware({ entityKey: "JOURNAL", action: "VIEW", companyIdSource: "query.companyId" }),
   listOpenEmployeePayables
+);
+router.get(
+  "/salary-records",
+  protect,
+  accessControlMiddleware({ entityKey: "JOURNAL", action: "VIEW", companyIdSource: "query.companyId" }),
+  getSalaryRecords
 );
 router.get(
   "/reconciliation",
