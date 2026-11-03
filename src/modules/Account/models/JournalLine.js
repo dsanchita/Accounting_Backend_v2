@@ -44,6 +44,10 @@ const journalLineSchema = new mongoose.Schema(
     linkedToVendorId: {
       type: String,
     },
+    employeeId: { type: String, default: null, index: true },
+    employeeCode: { type: String, default: "" },
+    employeeName: { type: String, default: "" },
+    sourceReference: { type: String, default: "" },
     lineNumber: Number,
     isReconciled: {
       type: Boolean,

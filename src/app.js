@@ -17,6 +17,7 @@ import invoiceAccountingRoutes from "./modules/Invoice/routers/invoiceAccounting
 import auditRoutes from "./modules/audit/routes.js";
 import systemRoutes from "./routes/systemRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
+import hrmsIntegrationRoutes from "./modules/Account/routers/hrmsIntegrationRoutes.js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -24,7 +25,12 @@ dotenv.config();
 const app = express();
 
 // Middleware
-app.use(express.json());
+app.use(express.json({
+  limit: "10mb",
+  verify: (req, res, buffer) => {
+    req.rawBody = Buffer.from(buffer);
+  },
+}));
 app.use(express.urlencoded({ extended: true }));
 
 // 🔧 Dynamic CORS Configuration for Development & Production
@@ -109,6 +115,7 @@ app.use("/api/companies", companyRoutes);
 app.use("/api/masterData", masterDataRoutes);
 app.use("/api/audit-logs", auditRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/integrations/hrms", hrmsIntegrationRoutes);
 
 /**
  * Register module-specific routes based on connected databases

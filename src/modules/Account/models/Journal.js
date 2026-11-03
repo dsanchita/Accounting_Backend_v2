@@ -35,7 +35,7 @@ const journalSchema = new mongoose.Schema(
     },
     sourceType: {
       type: String,
-      enum: ["MANUAL", "INVOICE", "PAYMENT", "ADJUSTMENT", "EXCEL", "REVERSAL"],
+      enum: ["MANUAL", "INVOICE", "PAYMENT", "ADJUSTMENT", "EXCEL", "REVERSAL", "HRMS_PAYROLL", "HRMS_CLAIM", "HRMS_SETTLEMENT"],
       default: "MANUAL",
     },
     sourceId: String,
@@ -107,6 +107,16 @@ journalSchema.post("save", async function (doc) {
 
 journalSchema.index({ companyId: 1, date: -1 });
 journalSchema.index({ sourceType: 1, sourceId: 1 });
+journalSchema.index(
+  { companyId: 1, sourceType: 1, sourceId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      sourceType: { $in: ["HRMS_PAYROLL", "HRMS_CLAIM", "HRMS_SETTLEMENT"] },
+      sourceId: { $type: "string" },
+    },
+  }
+);
 
 export const getJournalModel = async () => {
   const db = getDatabase("accounting");
