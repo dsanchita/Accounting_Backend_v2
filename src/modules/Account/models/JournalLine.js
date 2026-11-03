@@ -47,6 +47,11 @@ const journalLineSchema = new mongoose.Schema(
     employeeId: { type: String, default: null, index: true },
     employeeCode: { type: String, default: "" },
     employeeName: { type: String, default: "" },
+    employeeDepartment: { type: String, default: "" },
+    employeeDesignation: { type: String, default: "" },
+    employeeEmail: { type: String, default: "" },
+    employeePan: { type: String, default: "" },
+    paymentId: { type: String, default: "", index: true },
     sourceReference: { type: String, default: "" },
     lineNumber: Number,
     isReconciled: {

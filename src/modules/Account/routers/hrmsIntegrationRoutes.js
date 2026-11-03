@@ -12,6 +12,7 @@ import {
   listOpenEmployeePayables,
   postClaimAccrual,
   postPayrollAccrual,
+  postPayrollSettlement,
   reverseSettlement,
   saveMappings,
 } from "../controllers/hrmsIntegrationController.js";
@@ -35,6 +36,7 @@ const adminOnly = (req, res, next) => {
 };
 
 router.post("/payroll-accruals", verifyHrmsIntegrationSignature, postPayrollAccrual);
+router.post("/payroll-settlements", verifyHrmsIntegrationSignature, postPayrollSettlement);
 router.post("/claim-accruals", verifyHrmsIntegrationSignature, postClaimAccrual);
 router.get("/events/:eventId", verifyHrmsIntegrationSignature, getIntegrationEvent);
 

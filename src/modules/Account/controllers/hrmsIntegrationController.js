@@ -2,6 +2,7 @@ import crypto from "crypto";
 import mongoose from "mongoose";
 import { getDatabase } from "../../../config/databases.js";
 import { getAccountModel } from "../models/Account.js";
+import { getGroupModel } from "../models/Group.js";
 import { getJournalModel } from "../models/Journal.js";
 import { getJournalLineModel } from "../models/JournalLine.js";
 import { getHrmsIntegrationConfigModel } from "../models/HrmsIntegrationConfig.js";
@@ -45,7 +46,7 @@ const accountById = async (Account, id, companyId, label, expectedNature) => {
   return account;
 };
 
-const makeLine = (account, { debit = 0, credit = 0, description, employee, sourceReference }) => ({
+const makeLine = (account, { debit = 0, credit = 0, description, employee, sourceReference, paymentReference }) => ({
   accountId: account._id,
   accountCode: account.code,
   accountName: account.name,
@@ -53,9 +54,15 @@ const makeLine = (account, { debit = 0, credit = 0, description, employee, sourc
   debitAmount: debit / 100,
   creditAmount: credit / 100,
   description,
+  paymentReference: paymentReference || employee?.paymentId || employee?.payment_uid || "",
+  paymentId: employee?.paymentId || employee?.payment_uid || "",
   employeeId: employee?.employeeId || null,
   employeeCode: employee?.employeeCode || "",
   employeeName: employee?.employeeName || "",
+  employeeDepartment: employee?.department || employee?.employeeDepartment || "",
+  employeeDesignation: employee?.designation || employee?.employeeDesignation || "",
+  employeeEmail: employee?.officialEmail || employee?.employeeEmail || "",
+  employeePan: employee?.pan || employee?.employeePan || "",
   sourceReference: sourceReference || "",
 });
 
@@ -350,10 +357,13 @@ const createAccrual = async (req, res, next, eventType) => {
           Object.keys(employeeBenefits).forEach((key) => (benefitTotals[key] += employeeBenefits[key]));
           if (net > 0) {
             const lineIndex = lines.length;
+            const pmtIdStr = employee.paymentId ? ` [Payment ID: ${employee.paymentId}]` : "";
+            const deptStr = employee.department ? ` [Dept: ${employee.department}]` : "";
             lines.push(makeLine(outstandingSalary, {
               credit: net,
-              description: `Payroll ${year}-${String(month).padStart(2, "0")} payable — ${employee.employeeName}`,
+              description: `Payroll ${year}-${String(month).padStart(2, "0")} payable — ${employee.employeeName} (${employee.employeeCode || "N/A"})${pmtIdStr}${deptStr}`,
               employee,
+              paymentReference: employee.paymentId || "",
               sourceReference: sourceId,
             }));
             payables.push({
@@ -365,6 +375,11 @@ const createAccrual = async (req, res, next, eventType) => {
                 employeeId: String(employee.employeeId),
                 employeeCode: employee.employeeCode || "",
                 employeeName: employee.employeeName,
+                employeeDepartment: employee.department || "",
+                employeeDesignation: employee.designation || "",
+                employeeEmail: employee.officialEmail || employee.email || "",
+                employeePan: employee.pan || "",
+                paymentId: employee.paymentId || "",
                 originalAmountMinorUnits: net,
               },
             });
@@ -462,6 +477,264 @@ export const postPayrollAccrual = (req, res, next) =>
 
 export const postClaimAccrual = (req, res, next) =>
   createAccrual(req, res, next, "CLAIM_ACCRUAL");
+
+export const postPayrollSettlement = async (req, res, next) => {
+  const body = req.body || {};
+  if (!body?.eventId || typeof body.eventId !== "string") {
+    return res.status(400).json({ success: false, message: "A stable eventId is required" });
+  }
+
+  try {
+    const config = await getActiveConfig();
+    const companyId = config.companyId;
+    const paymentDate = body.paymentDate || new Date();
+    const date = assertDateOpen(config, paymentDate);
+
+    const Settlement = await getEmployeeSettlementModel();
+    const payloadHash = getPayloadHash(body);
+    const existing = await Settlement.findOne({ eventId: body.eventId }).lean();
+    if (existing) {
+      if (existing.payloadHash !== payloadHash) {
+        return res.status(409).json({ success: false, code: "IDEMPOTENCY_CONFLICT", message: "Settlement event ID was reused with a different payload" });
+      }
+      return res.status(200).json({
+        success: true,
+        status: "POSTED",
+        journalId: existing.journalId,
+        message: "Settlement already posted",
+      });
+    }
+
+    const bankAccountId = body.bankAccountId || config.bankAccountIds?.[0];
+    if (!bankAccountId) {
+      throw integrationError("No bank ledger configured for HRMS settlement in Accounting", 422, "NO_BANK_ACCOUNT_CONFIGURED");
+    }
+
+    const Account = await getAccountModel();
+    const Journal = await getJournalModel();
+    const JournalLine = await getJournalLineModel();
+    const Payable = await getEmployeePayableModel();
+
+    const bankAccount = await accountById(Account, bankAccountId, companyId, "Bank account", "Asset");
+    const outstandingSalary = await accountById(Account, config.payroll?.outstandingSalaryAccountId, companyId, "Outstanding Salary account", "Liability");
+
+    // Match open payables
+    let candidatePayables = [];
+    if (Array.isArray(body.allocations) && body.allocations.some((a) => a.payableId)) {
+      const payableIds = body.allocations.map((a) => a.payableId).filter((id) => mongoose.Types.ObjectId.isValid(id));
+      candidatePayables = await Payable.find({
+        _id: { $in: payableIds },
+        companyId,
+        sourceType: "PAYROLL",
+        status: { $in: ["OPEN", "PARTIAL"] },
+      }).lean();
+    } else if (Array.isArray(body.employeeIds) && body.employeeIds.length) {
+      const query = {
+        companyId,
+        sourceType: "PAYROLL",
+        employeeId: { $in: body.employeeIds.map(String) },
+        status: { $in: ["OPEN", "PARTIAL"] },
+      };
+      if (body.payrollRunId) query.sourceId = String(body.payrollRunId);
+      candidatePayables = await Payable.find(query).lean();
+    } else if (body.payrollRunId) {
+      candidatePayables = await Payable.find({
+        companyId,
+        sourceType: "PAYROLL",
+        sourceId: String(body.payrollRunId),
+        status: { $in: ["OPEN", "PARTIAL"] },
+      }).lean();
+    } else if (Array.isArray(body.allocations) && body.allocations.some((a) => a.employeeId)) {
+      const empIds = body.allocations.map((a) => String(a.employeeId));
+      candidatePayables = await Payable.find({
+        companyId,
+        sourceType: "PAYROLL",
+        employeeId: { $in: empIds },
+        status: { $in: ["OPEN", "PARTIAL"] },
+      }).lean();
+    }
+
+    if (!candidatePayables.length) {
+      return res.status(200).json({
+        success: true,
+        status: "NOOP",
+        message: "No open employee payables found matching settlement request",
+      });
+    }
+
+    const bankRef = String(body.bankReference || `HRMS-PAY-${new Date().toISOString().slice(0, 10)}`).trim();
+    const lines = [];
+    const normalizedAllocations = [];
+    let totalMinorUnits = 0;
+
+    for (const payable of candidatePayables) {
+      const remaining = payable.originalAmountMinorUnits - payable.settledAmountMinorUnits;
+      if (remaining <= 0) continue;
+
+      let allocAmount = remaining;
+      if (Array.isArray(body.allocations)) {
+        const customAlloc = body.allocations.find(
+          (a) => String(a.payableId) === String(payable._id) || String(a.employeeId) === String(payable.employeeId)
+        );
+        if (customAlloc?.amountMinorUnits) {
+          allocAmount = Math.min(Number(customAlloc.amountMinorUnits), remaining);
+        }
+      }
+
+      if (allocAmount <= 0) continue;
+      totalMinorUnits += allocAmount;
+
+      const pmtIdStr = payable.paymentId ? ` [Payment ID: ${payable.paymentId}]` : "";
+      lines.push(
+        makeLine(outstandingSalary, {
+          debit: allocAmount,
+          description: `Salary settlement ${bankRef} — ${payable.employeeName} (${payable.employeeCode || ""})${pmtIdStr}`,
+          employee: {
+            employeeId: payable.employeeId,
+            employeeCode: payable.employeeCode,
+            employeeName: payable.employeeName,
+            department: payable.employeeDepartment,
+            designation: payable.employeeDesignation,
+            officialEmail: payable.employeeEmail,
+            pan: payable.employeePan,
+            paymentId: payable.paymentId,
+          },
+          paymentReference: payable.paymentId || bankRef,
+          sourceReference: payable.sourceId,
+        })
+      );
+      normalizedAllocations.push({ payable, amount: allocAmount });
+    }
+
+    if (totalMinorUnits <= 0) {
+      return res.status(200).json({
+        success: true,
+        status: "NOOP",
+        message: "All matching payables are already fully settled",
+      });
+    }
+
+    lines.push(
+      makeLine(bankAccount, {
+        credit: totalMinorUnits,
+        description: `Salary disbursement ${bankRef} (${normalizedAllocations.length} employees)`,
+        sourceReference: bankRef,
+      })
+    );
+
+    assertJournalBalanced(lines);
+
+    const db = getDatabase("accounting");
+    const session = await db.startSession();
+    let createdJournal;
+
+    try {
+      await session.withTransaction(async () => {
+        const number = `PAY-${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+        const [journal] = await Journal.create(
+          [
+            {
+              number,
+              voucherType: "PAYMENT",
+              date,
+              referenceNumber: bankRef,
+              paymentReference: bankRef,
+              bankReference: bankRef,
+              narration: `HRMS salary disbursement ${bankRef} (${normalizedAllocations.length} employees)`,
+              companyId,
+              sourceType: "HRMS_SETTLEMENT",
+              sourceId: body.eventId,
+              totalDebit: totalMinorUnits / 100,
+              totalCredit: totalMinorUnits / 100,
+              status: "Posted",
+              approvalStatus: "Approved",
+              approvedBy: "HRMS Integration",
+              approvalDate: new Date(),
+              createdBy: "HRMS Integration",
+            },
+          ],
+          { session }
+        );
+
+        const lineDocs = lines.map((line, index) => ({
+          ...line,
+          journalId: journal._id,
+          lineNumber: index + 1,
+          transactionMode: "BANK",
+          bankReference: bankRef,
+        }));
+        const savedLines = await JournalLine.insertMany(lineDocs, { session });
+
+        const savedAllocations = [];
+        for (let i = 0; i < normalizedAllocations.length; i++) {
+          const { payable, amount } = normalizedAllocations[i];
+          const updated = await Payable.findOneAndUpdate(
+            {
+              _id: payable._id,
+              companyId,
+              settledAmountMinorUnits: payable.settledAmountMinorUnits,
+              originalAmountMinorUnits: { $gte: payable.settledAmountMinorUnits + amount },
+            },
+            {
+              $inc: { settledAmountMinorUnits: amount },
+              $set: {
+                status:
+                  payable.settledAmountMinorUnits + amount >= payable.originalAmountMinorUnits
+                    ? "SETTLED"
+                    : "PARTIAL",
+              },
+            },
+            { new: true, session }
+          );
+
+          if (!updated) {
+            throw integrationError(`Payable changed during settlement for ${payable.employeeName}`, 409, "PAYABLE_CONCURRENTLY_CHANGED");
+          }
+
+          savedAllocations.push({
+            payableId: payable._id,
+            amountMinorUnits: amount,
+            journalLineId: savedLines[i]._id,
+          });
+        }
+
+        await Settlement.create(
+          [
+            {
+              companyId,
+              eventId: body.eventId,
+              payloadHash,
+              settlementType: "PAYROLL",
+              journalId: journal._id,
+              bankAccountId: bankAccount._id,
+              paymentDate: date,
+              bankReference: bankRef,
+              allocations: savedAllocations,
+              createdBy: "HRMS Integration",
+            },
+          ],
+          { session }
+        );
+
+        createdJournal = journal;
+      });
+
+      return res.status(201).json({
+        success: true,
+        status: "POSTED",
+        eventId: body.eventId,
+        journalId: createdJournal._id,
+        journalNumber: createdJournal.number,
+        totalSettledAmount: totalMinorUnits / 100,
+        settledEmployeesCount: normalizedAllocations.length,
+      });
+    } finally {
+      await session.endSession();
+    }
+  } catch (error) {
+    next(error);
+  }
+};
 
 export const getIntegrationEvent = async (req, res, next) => {
   try {

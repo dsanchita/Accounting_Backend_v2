@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { getDatabase } from "../../../config/databases.js";
+import { getGroupModel } from "./Group.js";
 
 const accountSchema = new mongoose.Schema(
   {
@@ -142,5 +143,6 @@ accountSchema.index(
 
 export const getAccountModel = async () => {
   const db = getDatabase("accounting");
+  await getGroupModel();
   return db.models.Account || db.model("Account", accountSchema);
 };
