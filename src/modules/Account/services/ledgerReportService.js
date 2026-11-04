@@ -114,8 +114,20 @@ export const getLedgerReport = async (accountId, companyId, startDate, endDate, 
       runningBalance += credit - debit;
     }
 
+    const rawJournalDate = line.journalId?.date || line.createdAt;
+    const createdAtTime = line.journalId?.createdAt || line.createdAt;
+    let effectiveJournalDate = rawJournalDate;
+    if (rawJournalDate && createdAtTime) {
+      const dJournal = new Date(rawJournalDate);
+      const dCreated = new Date(createdAtTime);
+      if (dJournal > dCreated && dJournal > new Date()) {
+        effectiveJournalDate = createdAtTime;
+      }
+    }
+
     transactions.push({
-      journalDate: line.journalId?.date || line.createdAt,
+      journalDate: effectiveJournalDate,
+      originalJournalDate: rawJournalDate,
       voucherType: line.journalId?.voucherType,
       journalNumber: line.journalId?.number,
       reference: line.journalId?.externalDocNo || line.journalId?.referenceNumber || "",
@@ -127,6 +139,7 @@ export const getLedgerReport = async (accountId, companyId, startDate, endDate, 
       referenceNumber: line.journalId?.referenceNumber || line.journalId?.number || "",
       partyName: line.journalId?.partyName || "",
       externalDocNo: line.journalId?.externalDocNo || "",
+      createdAt: line.journalId?.createdAt || line.createdAt,
       reconciliationStatus: bankLedgerTxByJournalLineId.get(String(line._id))?.reconciliationStatus || "UNMATCHED",
       isReconciled: Boolean(bankLedgerTxByJournalLineId.get(String(line._id))?.isReconciled),
       allocatedAmount: Number(bankLedgerTxByJournalLineId.get(String(line._id))?.allocatedAmount || 0),

@@ -296,7 +296,10 @@ const createAccrual = async (req, res, next, eventType) => {
         if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year)) {
           throw integrationError("Payroll period must include a 1-based month and year");
         }
-        postingDate = assertDateOpen(config, new Date(Date.UTC(year, month, 0)));
+        const monthEnd = new Date(Date.UTC(year, month, 0));
+        const now = new Date();
+        const rawDate = body.date || body.postingDate || body.accrualDate || (monthEnd > now ? now : monthEnd);
+        postingDate = assertDateOpen(config, rawDate);
         const employees = body.employees;
         if (!Array.isArray(employees) || employees.length === 0) {
           throw integrationError("Payroll must contain at least one employee");
