@@ -531,6 +531,14 @@ export const postPayrollSettlement = async (req, res, next) => {
         sourceType: "PAYROLL",
         status: { $in: ["OPEN", "PARTIAL"] },
       }).lean();
+    } else if (Array.isArray(body.allocations) && body.allocations.some((a) => a.paymentId)) {
+      const pmtIds = body.allocations.map((a) => a.paymentId).filter(Boolean);
+      candidatePayables = await Payable.find({
+        companyId,
+        sourceType: "PAYROLL",
+        paymentId: { $in: pmtIds },
+        status: { $in: ["OPEN", "PARTIAL"] },
+      }).lean();
     } else if (Array.isArray(body.employeeIds) && body.employeeIds.length) {
       const query = {
         companyId,
@@ -577,7 +585,10 @@ export const postPayrollSettlement = async (req, res, next) => {
       let allocAmount = remaining;
       if (Array.isArray(body.allocations)) {
         const customAlloc = body.allocations.find(
-          (a) => String(a.payableId) === String(payable._id) || String(a.employeeId) === String(payable.employeeId)
+          (a) =>
+            String(a.payableId) === String(payable._id) ||
+            (a.paymentId && payable.paymentId && String(a.paymentId) === String(payable.paymentId)) ||
+            String(a.employeeId) === String(payable.employeeId)
         );
         if (customAlloc?.amountMinorUnits) {
           allocAmount = Math.min(Number(customAlloc.amountMinorUnits), remaining);
