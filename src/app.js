@@ -30,7 +30,7 @@ app.use(express.urlencoded({ extended: true }));
 // 🔧 Dynamic CORS Configuration for Development & Production
 const allowedOrigins = [
   // Development
-  "http://localhost:5173",
+  "http://localhost:5174",
   "http://localhost:3000",
   // Production - from environment variable
   process.env.CLIENT_URL,
