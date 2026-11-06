@@ -41,3 +41,29 @@ test("signs payroll-settlements requests consistently", () => {
   assert.equal(typeof sig, "string");
   assert.equal(sig.length, 64);
 });
+
+test("signs claim-accruals and claim-settlements requests consistently", () => {
+  const accrualRequest = {
+    timestamp: "1710000000",
+    nonce: "claim-accrual-nonce-12345",
+    method: "POST",
+    requestPath: "/api/integrations/hrms/claim-accruals",
+    rawBody: JSON.stringify({ eventId: "hrms-claim-1" }),
+    secret: "01234567890123456789012345678901",
+  };
+  const accrualSig = signIntegrationRequest(accrualRequest);
+  assert.equal(typeof accrualSig, "string");
+  assert.equal(accrualSig.length, 64);
+
+  const settlementRequest = {
+    timestamp: "1710000000",
+    nonce: "claim-settlement-nonce-12345",
+    method: "POST",
+    requestPath: "/api/integrations/hrms/claim-settlements",
+    rawBody: JSON.stringify({ eventId: "hrms-settlement-claim-1" }),
+    secret: "01234567890123456789012345678901",
+  };
+  const settlementSig = signIntegrationRequest(settlementRequest);
+  assert.equal(typeof settlementSig, "string");
+  assert.equal(settlementSig.length, 64);
+});

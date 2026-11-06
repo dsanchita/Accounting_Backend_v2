@@ -4,6 +4,7 @@ import { accessControlMiddleware } from "../../../middlewares/accessBasedMiddlew
 import { verifyHrmsIntegrationSignature } from "../../../middlewares/hrmsIntegrationAuth.js";
 import {
   createSettlement,
+  getClaimsReport,
   getIntegrationEvent,
   getMappings,
   getEmployeePayableReconciliation,
@@ -12,6 +13,7 @@ import {
   listEmployeeSettlements,
   listOpenEmployeePayables,
   postClaimAccrual,
+  postClaimSettlement,
   postPayrollAccrual,
   postPayrollSettlement,
   reverseSettlement,
@@ -39,6 +41,7 @@ const adminOnly = (req, res, next) => {
 router.post("/payroll-accruals", verifyHrmsIntegrationSignature, postPayrollAccrual);
 router.post("/payroll-settlements", verifyHrmsIntegrationSignature, postPayrollSettlement);
 router.post("/claim-accruals", verifyHrmsIntegrationSignature, postClaimAccrual);
+router.post("/claim-settlements", verifyHrmsIntegrationSignature, postClaimSettlement);
 router.get("/events/:eventId", verifyHrmsIntegrationSignature, getIntegrationEvent);
 
 router.get("/admin/:companyId", protect, adminOnly, listEmployeePayablesAdmin);
@@ -62,6 +65,12 @@ router.get(
   protect,
   accessControlMiddleware({ entityKey: "JOURNAL", action: "VIEW", companyIdSource: "query.companyId" }),
   getSalaryRecords
+);
+router.get(
+  "/claims-report",
+  protect,
+  accessControlMiddleware({ entityKey: "JOURNAL", action: "VIEW", companyIdSource: "query.companyId" }),
+  getClaimsReport
 );
 router.get(
   "/reconciliation",
