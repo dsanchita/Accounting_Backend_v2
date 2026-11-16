@@ -5,6 +5,7 @@ import { verifyHrmsIntegrationSignature } from "../../../middlewares/hrmsIntegra
 import {
   createSettlement,
   getClaimsReport,
+  getExecutiveDuesReport,
   getIntegrationEvent,
   getMappings,
   getEmployeePayableReconciliation,
@@ -71,6 +72,12 @@ router.get(
   protect,
   accessControlMiddleware({ entityKey: "JOURNAL", action: "VIEW", companyIdSource: "query.companyId" }),
   getClaimsReport
+);
+router.get(
+  "/executive-dues-report",
+  protect,
+  accessControlMiddleware({ entityKey: "JOURNAL", action: "VIEW", companyIdSource: "query.companyId" }),
+  getExecutiveDuesReport
 );
 router.get(
   "/reconciliation",

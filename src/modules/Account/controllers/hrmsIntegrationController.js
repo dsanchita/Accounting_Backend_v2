@@ -1413,6 +1413,260 @@ export const getClaimsReport = async (req, res, next) => {
   }
 };
 
+export const getExecutiveDuesReport = async (req, res, next) => {
+  try {
+    const companyId = String(req.query.companyId || req.params.companyId || "");
+    if (!companyId) return res.status(400).json({ success: false, message: "companyId is required" });
+
+    const {
+      startDate,
+      endDate,
+      sourceType,
+      search,
+      status,
+      department,
+    } = req.query;
+
+    const Payable = await getEmployeePayableModel();
+    const Settlement = await getEmployeeSettlementModel();
+    const Journal = await getJournalModel();
+
+    // Base payable filter for company
+    const payableQuery = { companyId };
+    if (sourceType && ["PAYROLL", "CLAIM"].includes(sourceType.toUpperCase())) {
+      payableQuery.sourceType = sourceType.toUpperCase();
+    }
+    if (status) {
+      const upperStatus = status.toUpperCase();
+      if (upperStatus === "PENDING" || upperStatus === "OPEN") {
+        payableQuery.status = { $in: ["OPEN", "PARTIAL"] };
+      } else if (upperStatus === "SETTLED" || upperStatus === "PAID") {
+        payableQuery.status = "SETTLED";
+      }
+    }
+    if (department && department !== "ALL") {
+      payableQuery.employeeDepartment = department;
+    }
+    if (search && String(search).trim()) {
+      const searchRegex = new RegExp(String(search).trim(), "i");
+      payableQuery.$or = [
+        { employeeName: searchRegex },
+        { employeeCode: searchRegex },
+        { employeeEmail: searchRegex },
+      ];
+    }
+
+    const payables = await Payable.find(payableQuery).sort({ createdAt: -1 }).lean();
+
+    // Fetch related Journals for posting dates and voucher numbers
+    const journalIds = [...new Set(payables.map((p) => String(p.journalId)).filter(Boolean))];
+    const journals = await Journal.find({ _id: { $in: journalIds } }).lean();
+    const journalMap = new Map(journals.map((j) => [String(j._id), j]));
+
+    // Fetch related Settlements for this company
+    const settlements = await Settlement.find({ companyId }).sort({ paymentDate: -1 }).lean();
+    const settlementAllocationMap = new Map();
+    for (const s of settlements) {
+      for (const alloc of s.allocations || []) {
+        const pId = String(alloc.payableId);
+        if (!settlementAllocationMap.has(pId)) {
+          settlementAllocationMap.set(pId, []);
+        }
+        settlementAllocationMap.get(pId).push({
+          settlementId: s._id,
+          settlementType: s.settlementType,
+          paymentDate: s.paymentDate,
+          bankReference: s.bankReference,
+          amountMinorUnits: alloc.amountMinorUnits,
+          journalId: s.journalId,
+        });
+      }
+    }
+
+    // Parse date filters
+    let filterStart = null;
+    let filterEnd = null;
+    if (startDate) {
+      filterStart = new Date(startDate);
+      if (isNaN(filterStart.getTime())) filterStart = null;
+      else filterStart.setHours(0, 0, 0, 0);
+    }
+    if (endDate) {
+      filterEnd = new Date(endDate);
+      if (isNaN(filterEnd.getTime())) filterEnd = null;
+      else filterEnd.setHours(23, 59, 59, 999);
+    }
+
+    const employeeMap = new Map();
+    const allDepartments = new Set();
+
+    let grandTotalDue = 0;
+    let grandTotalPaid = 0;
+    let grandPeriodDue = 0;
+    let grandPeriodPaid = 0;
+    let payrollTotalDue = 0;
+    let payrollTotalPaid = 0;
+    let claimsTotalDue = 0;
+    let claimsTotalPaid = 0;
+
+    for (const p of payables) {
+      if (p.employeeDepartment) allDepartments.add(p.employeeDepartment);
+
+      const journal = journalMap.get(String(p.journalId));
+      const postingDate = journal?.date ? new Date(journal.date) : new Date(p.createdAt);
+
+      const inDateRange =
+        (!filterStart || postingDate >= filterStart) &&
+        (!filterEnd || postingDate <= filterEnd);
+
+      const allocs = settlementAllocationMap.get(String(p._id)) || [];
+      const periodAllocs = allocs.filter((a) => {
+        const pDate = new Date(a.paymentDate);
+        return (!filterStart || pDate >= filterStart) && (!filterEnd || pDate <= filterEnd);
+      });
+      const periodPaidForThisPayable = periodAllocs.reduce((sum, a) => sum + (a.amountMinorUnits || 0), 0);
+
+      // If a date filter is applied, only include records active within this range
+      if (filterStart || filterEnd) {
+        if (!inDateRange && periodPaidForThisPayable === 0) {
+          continue;
+        }
+      }
+
+      const empKey = p.employeeName?.trim() || String(p.employeeId);
+      if (!employeeMap.has(empKey)) {
+        employeeMap.set(empKey, {
+          employeeId: p.employeeId,
+          employeeCode: p.employeeCode || "",
+          employeeName: p.employeeName,
+          employeeDepartment: p.employeeDepartment || "General",
+          employeeDesignation: p.employeeDesignation || "",
+          employeeEmail: p.employeeEmail || "",
+          currency: p.currency || "INR",
+          totalDueMinorUnits: 0,
+          totalPaidMinorUnits: 0,
+          totalPendingMinorUnits: 0,
+          periodDueMinorUnits: 0,
+          periodPaidMinorUnits: 0,
+          payroll: {
+            dueMinorUnits: 0,
+            paidMinorUnits: 0,
+            pendingMinorUnits: 0,
+            count: 0,
+          },
+          claims: {
+            dueMinorUnits: 0,
+            paidMinorUnits: 0,
+            pendingMinorUnits: 0,
+            count: 0,
+          },
+          items: [],
+        });
+      }
+
+      const emp = employeeMap.get(empKey);
+      const originalAmount = p.originalAmountMinorUnits;
+      const settledAmount = p.settledAmountMinorUnits || 0;
+      const pendingAmount = Math.max(0, originalAmount - settledAmount);
+
+      emp.totalDueMinorUnits += originalAmount;
+      emp.totalPaidMinorUnits += settledAmount;
+      emp.totalPendingMinorUnits += pendingAmount;
+
+      grandTotalDue += originalAmount;
+      grandTotalPaid += settledAmount;
+
+      if (inDateRange) {
+        emp.periodDueMinorUnits += originalAmount;
+        grandPeriodDue += originalAmount;
+      }
+      emp.periodPaidMinorUnits += periodPaidForThisPayable;
+      grandPeriodPaid += periodPaidForThisPayable;
+
+      if (p.sourceType === "PAYROLL") {
+        emp.payroll.dueMinorUnits += originalAmount;
+        emp.payroll.paidMinorUnits += settledAmount;
+        emp.payroll.pendingMinorUnits += pendingAmount;
+        emp.payroll.count += 1;
+        payrollTotalDue += originalAmount;
+        payrollTotalPaid += settledAmount;
+      } else {
+        emp.claims.dueMinorUnits += originalAmount;
+        emp.claims.paidMinorUnits += settledAmount;
+        emp.claims.pendingMinorUnits += pendingAmount;
+        emp.claims.count += 1;
+        claimsTotalDue += originalAmount;
+        claimsTotalPaid += settledAmount;
+      }
+
+      emp.items.push({
+        payableId: p._id,
+        sourceType: p.sourceType,
+        sourceId: p.sourceId,
+        paymentId: p.paymentId || (p.sourceType === "CLAIM" ? "Claim" : "Payroll"),
+        currency: p.currency,
+        originalAmountMinorUnits: originalAmount,
+        settledAmountMinorUnits: settledAmount,
+        pendingAmountMinorUnits: pendingAmount,
+        status: p.status,
+        journalId: p.journalId,
+        journalNumber: journal?.number || "",
+        narration: journal?.narration || "",
+        postingDate,
+        createdAt: p.createdAt,
+        settlements: allocs,
+      });
+    }
+
+    const employees = Array.from(employeeMap.values()).sort((a, b) =>
+      b.totalPendingMinorUnits - a.totalPendingMinorUnits || a.employeeName.localeCompare(b.employeeName)
+    );
+
+    const summary = {
+      totalEmployees: employees.length,
+      totalDueMinorUnits: grandTotalDue,
+      totalPaidMinorUnits: grandTotalPaid,
+      totalPendingMinorUnits: Math.max(0, grandTotalDue - grandTotalPaid),
+      periodDueMinorUnits: filterStart || filterEnd ? grandPeriodDue : grandTotalDue,
+      periodPaidMinorUnits: filterStart || filterEnd ? grandPeriodPaid : grandTotalPaid,
+      periodPendingMinorUnits: Math.max(
+        0,
+        (filterStart || filterEnd ? grandPeriodDue : grandTotalDue) -
+          (filterStart || filterEnd ? grandPeriodPaid : grandTotalPaid)
+      ),
+      payroll: {
+        dueMinorUnits: payrollTotalDue,
+        paidMinorUnits: payrollTotalPaid,
+        pendingMinorUnits: Math.max(0, payrollTotalDue - payrollTotalPaid),
+      },
+      claims: {
+        dueMinorUnits: claimsTotalDue,
+        paidMinorUnits: claimsTotalPaid,
+        pendingMinorUnits: Math.max(0, claimsTotalDue - claimsTotalPaid),
+      },
+      filter: {
+        startDate: startDate || null,
+        endDate: endDate || null,
+        sourceType: sourceType || "ALL",
+        status: status || "ALL",
+        search: search || null,
+        department: department || "ALL",
+      },
+      departments: Array.from(allDepartments).sort(),
+    };
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        summary,
+        employees,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const createSettlement = async (req, res, next) => {
   const { companyId, settlementType, bankAccountId, paymentDate, bankReference, allocations, eventId } = req.body || {};
   const payloadHash = getPayloadHash(req.body || {});
