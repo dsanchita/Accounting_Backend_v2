@@ -68,7 +68,7 @@ export const getInvoicesRepo = async (filter = {}, options = {}) => {
     const { sort = { invoiceDate: -1 }, limit = 0, skip = 0 } = options;
 
     const invoices = await Invoice.find(filter)
-      .populate({ path: "linkedPO", select: "poNumber poDate", model: PurchaseOrder })
+      .populate({ path: "linkedPO", select: "poNumber poDate poreferencevalue", model: PurchaseOrder })
       .sort(sort)
       .limit(limit)
       .skip(skip)

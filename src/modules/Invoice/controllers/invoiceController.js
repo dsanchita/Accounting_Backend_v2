@@ -381,6 +381,7 @@ export const createInvoice = async (req, res, next) => {
       deliveryMilestones,
       contractWorklog,
       paymentSchedules,
+      monthlyBillingInfo,
     } = req.body;
 
     if (!invoiceDate || !dueDate || !billTo || !shipTo || !items || items.length === 0 || !companyId) {
@@ -484,6 +485,7 @@ export const createInvoice = async (req, res, next) => {
       invoiceNo: invoiceNumber,
       linkedPO: linkedPO ? toMongoId(linkedPO) : null,
       poNumber: req.body.poNumber || linkedPOData?.poNumber || req.body.linkedPORef || req.body.poreferencevalue || "",
+      poreferencevalue: req.body.poreferencevalue || linkedPOData?.poreferencevalue || "",
       invoiceDate: new Date(invoiceDate),
       dueDate: new Date(dueDate),
       billTo,
@@ -508,6 +510,7 @@ export const createInvoice = async (req, res, next) => {
       deliveryMilestones: Array.isArray(deliveryMilestones) ? deliveryMilestones : [],
       contractWorklog: Array.isArray(contractWorklog) ? contractWorklog : [],
       paymentSchedules: Array.isArray(paymentSchedules) ? paymentSchedules : [],
+      ...(monthlyBillingInfo && { monthlyBillingInfo }),
       notes,
       actionType: "create",
       createdBy: req.user?.id,
@@ -1280,6 +1283,7 @@ export const createInvoiceWithJournal = async (req, res, next) => {
       notes,
       createJournalEntry = false,
       journalDescription,
+      monthlyBillingInfo,
     } = req.body;
 
     if (!invoiceDate || !dueDate || !billTo || !shipTo || !items || items.length === 0 || !companyId) {
@@ -1295,8 +1299,9 @@ export const createInvoiceWithJournal = async (req, res, next) => {
     }
     validateInvoiceItemQuantities(items, "createInvoiceWithJournal");
 
+    let linkedPOData = null;
     if (linkedPO) {
-      const linkedPOData = await getPurchaseOrderByIdRepo(linkedPO);
+      linkedPOData = await getPurchaseOrderByIdRepo(linkedPO);
       if (linkedPOData?.approvalStatus !== "Approved") {
         throw new AppError("Invoice can be created only for approved purchase orders", 400, "createInvoiceWithJournal");
       }
@@ -1325,7 +1330,8 @@ export const createInvoiceWithJournal = async (req, res, next) => {
       companyId,
       invoiceNo: invoiceNumber,
       linkedPO: linkedPO ? toMongoId(linkedPO) : null,
-      poNumber: req.body.poNumber || req.body.linkedPORef || req.body.poreferencevalue || "",
+      poNumber: req.body.poNumber || linkedPOData?.poNumber || req.body.linkedPORef || req.body.poreferencevalue || "",
+      poreferencevalue: req.body.poreferencevalue || linkedPOData?.poreferencevalue || "",
       invoiceDate: new Date(invoiceDate),
       dueDate: new Date(dueDate),
       billTo,
@@ -1341,6 +1347,7 @@ export const createInvoiceWithJournal = async (req, res, next) => {
       netPayable: invoiceAmount,
       remainingAmount: invoiceAmount,
       valueInWords: `${invoiceAmount} only`,
+      ...(monthlyBillingInfo && { monthlyBillingInfo }),
       notes,
       createdBy: req.user?.id,
       updatedBy: req.user?.id,

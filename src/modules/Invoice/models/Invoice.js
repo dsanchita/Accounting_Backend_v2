@@ -181,6 +181,7 @@ const invoiceSchema = new mongoose.Schema(
       index: true,
     },
     poNumber: { type: String },
+    poreferencevalue: { type: String },
 
     invoiceDate: { type: Date, required: true },
     dueDate: { type: Date, required: true },
@@ -272,6 +273,9 @@ const invoiceSchema = new mongoose.Schema(
 
     // Payment schedules
     paymentSchedules: [paymentScheduleSchema],
+
+    // Monthly billing tracking
+    monthlyBillingInfo: { type: mongoose.Schema.Types.Mixed },
 
     // Approval
     approvalStatus: {

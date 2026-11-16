@@ -33,12 +33,17 @@ export const prepareInvoiceData = (invoice) => {
   const billTo = invoice.billTo || {};
   const shipTo = invoice.shipTo || {};
 
+  const poReference =
+    invoice.poreferencevalue ||
+    (invoice.linkedPO && typeof invoice.linkedPO === "object" ? invoice.linkedPO.poreferencevalue : "") ||
+    "";
+
   return {
     InvoiceNo: invoice.invoiceNo || "",
     InvoiceDate: formatDate(invoice.invoiceDate),
     DueDate: formatDate(invoice.dueDate),
     referenceDate: formatDate(invoice.referenceDate),
-    purchaseorderreference: invoice.poNumber || "",
+    purchaseorderreference: poReference,
     Currency: invoice.currency || "INR",
     AmountDue: formatMoney(invoice.amountDue ?? invoice.invoiceAmount ?? 0),
     TotalTaxableValue: formatMoney(invoice.totalTaxableValue || 0),
@@ -62,6 +67,22 @@ export const prepareInvoiceData = (invoice) => {
 export const exportInvoice = async (invoice, format = "pdf", outputDir = "./uploads/exports") => {
   try {
     mkdirSync(outputDir, { recursive: true });
+
+    if (!invoice.poreferencevalue && invoice.linkedPO) {
+      if (typeof invoice.linkedPO === "object" && invoice.linkedPO.poreferencevalue) {
+        invoice.poreferencevalue = invoice.linkedPO.poreferencevalue;
+      } else if (typeof invoice.linkedPO === "string" || invoice.linkedPO._id) {
+        try {
+          const { getPurchaseOrderModel } = await import("../repos/purchaseOrderRepo.js");
+          const PurchaseOrder = await getPurchaseOrderModel();
+          const poId = invoice.linkedPO._id || invoice.linkedPO;
+          const po = await PurchaseOrder.findById(poId).select("poreferencevalue").lean();
+          if (po?.poreferencevalue) {
+            invoice.poreferencevalue = po.poreferencevalue;
+          }
+        } catch (_) {}
+      }
+    }
 
     const templateName = invoice.withSignature
       ? INVOICE_TEMPLATE_WITH_SIGNATURE

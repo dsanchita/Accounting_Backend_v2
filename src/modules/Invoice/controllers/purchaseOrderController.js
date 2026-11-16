@@ -15,6 +15,10 @@ import {
   deriveLegacyGstTotals,
 } from "../utils/taxNormalization.js";
 import {
+  splitMonthlyPeriods,
+  calculateMonthlyDistributionBreakdown,
+} from "../utils/monthlyPeriodUtils.js";
+import {
   createPurchaseOrderRepo,
   getPurchaseOrderByIdRepo,
   getPurchaseOrdersRepo,
@@ -283,6 +287,19 @@ export const createPurchaseOrder = async (req, res, next) => {
 
     const poNumber = await generatePONumber(companyId, vendor?.name || "", poDate);
 
+    let distributionSchedule = Array.isArray(req.body.distributionSchedule) && req.body.distributionSchedule.length > 0
+      ? req.body.distributionSchedule
+      : [];
+    if (paymentTerms === "monthly" && poDate && deliveryDate) {
+      const dist = calculateMonthlyDistributionBreakdown({
+        poDate,
+        deliveryDate,
+        items: normalizedItems,
+        taxType: computedTaxMeta.taxType,
+      });
+      distributionSchedule = dist.breakdown;
+    }
+
     const poData = {
       companyId,
       poNumber,
@@ -292,6 +309,7 @@ export const createPurchaseOrder = async (req, res, next) => {
       // New fields
       direction: direction || "receivable",
       paymentTerms: paymentTerms || "monthly",
+      distributionSchedule,
 
       // Legacy fields — kept for backward compat
       poCategory: poCategory || "project",
@@ -622,6 +640,19 @@ export const updatePurchaseOrder = async (req, res, next) => {
       updateData.totalCGSTAmount = taxMeta.totalCGSTAmount;
       updateData.totalSGSTAmount = taxMeta.totalSGSTAmount;
       updateData.totalIGSTAmount = taxMeta.totalIGSTAmount;
+    }
+
+    const effectivePaymentTerms = updateData.paymentTerms || oldPO.paymentTerms;
+    const effectivePoDate = updateData.poDate || oldPO.poDate;
+    const effectiveDeliveryDate = updateData.deliveryDate || oldPO.deliveryDate;
+    if (effectivePaymentTerms === "monthly" && effectivePoDate && effectiveDeliveryDate) {
+      const dist = calculateMonthlyDistributionBreakdown({
+        poDate: effectivePoDate,
+        deliveryDate: effectiveDeliveryDate,
+        items: updateData.items || oldPO.items || [],
+        taxType: updateData.taxType || oldPO.taxType,
+      });
+      updateData.distributionSchedule = dist.breakdown;
     }
 
     const changes = getChangedFields(oldPO, updateData);
