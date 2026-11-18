@@ -82,6 +82,68 @@ export const notifyHrmsPayrollPaid = async ({
   }
 };
 
+/**
+ * Notifies HRMS that employee claims have been settled in Accounting software.
+ * HRMS verifies HMAC signature and marks claims as "paid".
+ */
+export const notifyHrmsClaimPaid = async ({
+  claimIds,
+  claimNumbers,
+  employeeIds,
+  bankReference,
+  paymentDate,
+  paidBy,
+  notes,
+}) => {
+  const hrmsUrl = process.env.HRMS_API_URL || "http://localhost:8081";
+  const secret = process.env.HRMS_ACCOUNTING_HMAC_SECRET;
+  if (!secret) {
+    console.warn("[notifyHrmsClaimPaid] HRMS_ACCOUNTING_HMAC_SECRET not configured, skipping HRMS callback");
+    return null;
+  }
+
+  const endpoint = "/api/v1/external/claims/mark-paid";
+  const body = JSON.stringify({
+    claimIds,
+    claimNumbers,
+    employeeIds,
+    bankReference,
+    paymentDate,
+    paidBy,
+    notes,
+  });
+
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const nonce = crypto.randomBytes(24).toString("hex");
+  const signature = signIntegrationRequest({
+    timestamp,
+    nonce,
+    method: "POST",
+    requestPath: endpoint,
+    rawBody: body,
+    secret,
+  });
+
+  try {
+    const res = await fetch(`${hrmsUrl}${endpoint}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-integration-timestamp": timestamp,
+        "x-integration-nonce": nonce,
+        "x-integration-signature": signature,
+      },
+      body,
+    });
+    const data = await res.json();
+    console.log("[notifyHrmsClaimPaid] HRMS response:", data);
+    return data;
+  } catch (err) {
+    console.error("[notifyHrmsClaimPaid] Failed to notify HRMS:", err.message);
+    return { success: false, error: err.message };
+  }
+};
+
 const stableStringify = (value) => {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
   if (value && typeof value === "object") {
@@ -1917,6 +1979,25 @@ export const createSettlement = async (req, res, next) => {
         });
       } catch (hrmsSyncErr) {
         console.error("[createSettlement] HRMS sync error:", hrmsSyncErr.message);
+      }
+    } else if (settlementType === "CLAIM") {
+      try {
+        const callerName = req.user?.name || req.user?.email || "Accounting User";
+        const claimIds = payables.map((p) => p.sourceId).filter(Boolean);
+        const claimNumbers = payables.map((p) => p.paymentId).filter(Boolean);
+        const employeeIds = payables.map((p) => p.employeeId).filter(Boolean);
+
+        hrmsSync = await notifyHrmsClaimPaid({
+          claimIds,
+          claimNumbers,
+          employeeIds,
+          bankReference: String(bankReference).trim(),
+          paymentDate: date,
+          paidBy: callerName,
+          notes: `Settled in Accounting software (${journal?.number || ""})`,
+        });
+      } catch (hrmsSyncErr) {
+        console.error("[createSettlement] HRMS claim sync error:", hrmsSyncErr.message);
       }
     }
 
