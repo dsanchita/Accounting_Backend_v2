@@ -16,6 +16,133 @@ import {
   reconcilePayrollEmployee,
   toMinorUnits,
 } from "../services/hrmsIntegrationRules.js";
+import { signIntegrationRequest } from "../../../middlewares/hrmsIntegrationAuth.js";
+
+/**
+ * Notifies HRMS that payroll dues have been settled in Accounting software.
+ * HRMS verifies HMAC signature and marks trackers as "Paid".
+ */
+export const notifyHrmsPayrollPaid = async ({
+  trackerIds,
+  paymentIds,
+  employeeIds,
+  payrollRunId,
+  bankReference,
+  paymentDate,
+  paidBy,
+  notes,
+}) => {
+  const hrmsUrl = process.env.HRMS_API_URL || "http://localhost:8081";
+  const secret = process.env.HRMS_ACCOUNTING_HMAC_SECRET;
+  if (!secret) {
+    console.warn("[notifyHrmsPayrollPaid] HRMS_ACCOUNTING_HMAC_SECRET not configured, skipping HRMS callback");
+    return null;
+  }
+
+  const endpoint = "/api/v1/external/payroll/mark-paid";
+  const body = JSON.stringify({
+    trackerIds,
+    paymentIds,
+    employeeIds,
+    payrollRunId,
+    bankReference,
+    paymentDate,
+    paidBy,
+    notes,
+  });
+
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const nonce = crypto.randomBytes(24).toString("hex");
+  const signature = signIntegrationRequest({
+    timestamp,
+    nonce,
+    method: "POST",
+    requestPath: endpoint,
+    rawBody: body,
+    secret,
+  });
+
+  try {
+    const res = await fetch(`${hrmsUrl}${endpoint}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-integration-timestamp": timestamp,
+        "x-integration-nonce": nonce,
+        "x-integration-signature": signature,
+      },
+      body,
+    });
+    const data = await res.json();
+    console.log("[notifyHrmsPayrollPaid] HRMS response:", data);
+    return data;
+  } catch (err) {
+    console.error("[notifyHrmsPayrollPaid] Failed to notify HRMS:", err.message);
+    return { success: false, error: err.message };
+  }
+};
+
+/**
+ * Notifies HRMS that employee claims have been settled in Accounting software.
+ * HRMS verifies HMAC signature and marks claims as "paid".
+ */
+export const notifyHrmsClaimPaid = async ({
+  claimIds,
+  claimNumbers,
+  employeeIds,
+  bankReference,
+  paymentDate,
+  paidBy,
+  notes,
+}) => {
+  const hrmsUrl = process.env.HRMS_API_URL || "http://localhost:8081";
+  const secret = process.env.HRMS_ACCOUNTING_HMAC_SECRET;
+  if (!secret) {
+    console.warn("[notifyHrmsClaimPaid] HRMS_ACCOUNTING_HMAC_SECRET not configured, skipping HRMS callback");
+    return null;
+  }
+
+  const endpoint = "/api/v1/external/claims/mark-paid";
+  const body = JSON.stringify({
+    claimIds,
+    claimNumbers,
+    employeeIds,
+    bankReference,
+    paymentDate,
+    paidBy,
+    notes,
+  });
+
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const nonce = crypto.randomBytes(24).toString("hex");
+  const signature = signIntegrationRequest({
+    timestamp,
+    nonce,
+    method: "POST",
+    requestPath: endpoint,
+    rawBody: body,
+    secret,
+  });
+
+  try {
+    const res = await fetch(`${hrmsUrl}${endpoint}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-integration-timestamp": timestamp,
+        "x-integration-nonce": nonce,
+        "x-integration-signature": signature,
+      },
+      body,
+    });
+    const data = await res.json();
+    console.log("[notifyHrmsClaimPaid] HRMS response:", data);
+    return data;
+  } catch (err) {
+    console.error("[notifyHrmsClaimPaid] Failed to notify HRMS:", err.message);
+    return { success: false, error: err.message };
+  }
+};
 
 const stableStringify = (value) => {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
@@ -1668,11 +1795,13 @@ export const getExecutiveDuesReport = async (req, res, next) => {
 };
 
 export const createSettlement = async (req, res, next) => {
+  console.log("[createSettlement] Received body:", JSON.stringify(req.body));
   const { companyId, settlementType, bankAccountId, paymentDate, bankReference, allocations, eventId } = req.body || {};
-  const payloadHash = getPayloadHash(req.body || {});
+  const resolvedEventId = eventId || `accounting-settlement-${crypto.randomUUID()}`;
+  const payloadHash = getPayloadHash({ ...req.body, eventId: resolvedEventId });
   try {
-    if (!eventId || !companyId || !bankAccountId || !paymentDate || !String(bankReference || "").trim() || !Array.isArray(allocations) || !allocations.length) {
-      return res.status(400).json({ success: false, message: "Company, event ID, bank, date, reference, and allocations are required" });
+    if (!companyId || !paymentDate || !String(bankReference || "").trim() || !Array.isArray(allocations) || !allocations.length) {
+      return res.status(400).json({ success: false, message: "Company, payment date, bank reference, and allocations are required" });
     }
     if (!["PAYROLL", "CLAIM"].includes(settlementType)) {
       return res.status(422).json({ success: false, message: "Invalid settlement type" });
@@ -1680,23 +1809,26 @@ export const createSettlement = async (req, res, next) => {
     const Config = await getHrmsIntegrationConfigModel();
     const config = await Config.findOne({ key: "HRMS", companyId, isActive: true }).lean();
     if (!config) return res.status(409).json({ success: false, message: "HRMS mappings are not configured for this company" });
+    
+    const effectiveBankAccountId = bankAccountId || config.bankAccountIds?.[0];
+    if (!effectiveBankAccountId) {
+      return res.status(422).json({ success: false, message: "No bank ledger selected or configured for this company" });
+    }
+
     const date = assertDateOpen(config, paymentDate);
     const Account = await getAccountModel();
     const Journal = await getJournalModel();
     const JournalLine = await getJournalLineModel();
     const Payable = await getEmployeePayableModel();
     const Settlement = await getEmployeeSettlementModel();
-    const existing = await Settlement.findOne({ eventId }).lean();
+    const existing = await Settlement.findOne({ eventId: resolvedEventId }).lean();
     if (existing) {
       if (existing.payloadHash !== payloadHash) {
         return res.status(409).json({ success: false, code: "IDEMPOTENCY_CONFLICT", message: "Settlement event ID was reused with a different payload" });
       }
       return res.json({ success: true, status: "POSTED", journalId: existing.journalId, message: "Settlement already posted" });
     }
-    const bankAccount = await accountById(Account, bankAccountId, companyId, "Bank account", "Asset");
-    if (!(config.bankAccountIds || []).some((id) => String(id) === String(bankAccountId))) {
-      return res.status(422).json({ success: false, message: "Select a bank ledger configured for this company" });
-    }
+    const bankAccount = await accountById(Account, effectiveBankAccountId, companyId, "Bank account", "Asset");
     if (bankAccount.groupId?.nature !== "Asset") {
       return res.status(422).json({ success: false, message: "Settlement account must belong to an Asset group" });
     }
@@ -1806,11 +1938,11 @@ export const createSettlement = async (req, res, next) => {
         }
         const [savedSettlement] = await Settlement.create([{
           companyId,
-          eventId,
+          eventId: resolvedEventId,
           payloadHash,
           settlementType,
           journalId: created._id,
-          bankAccountId,
+          bankAccountId: effectiveBankAccountId,
           paymentDate: date,
           bankReference: String(bankReference).trim(),
           allocations: savedAllocations,
@@ -1826,12 +1958,56 @@ export const createSettlement = async (req, res, next) => {
     } finally {
       await session.endSession();
     }
-    res.status(201).json({ success: true, status: "POSTED", data: journal });
+
+    // If this was a PAYROLL settlement, notify HRMS to mark the payroll tracker as Paid!
+    let hrmsSync = null;
+    if (settlementType === "PAYROLL") {
+      try {
+        const callerName = req.user?.name || req.user?.email || "Accounting User";
+        const paymentIds = payables.map((p) => p.paymentId).filter(Boolean);
+        const employeeIds = payables.map((p) => p.employeeId).filter(Boolean);
+        const payrollRunIds = [...new Set(payables.map((p) => p.sourceId).filter(Boolean))];
+
+        hrmsSync = await notifyHrmsPayrollPaid({
+          paymentIds,
+          employeeIds,
+          payrollRunId: payrollRunIds[0],
+          bankReference: String(bankReference).trim(),
+          paymentDate: date,
+          paidBy: callerName,
+          notes: `Settled in Accounting software (${journal?.number || ""})`,
+        });
+      } catch (hrmsSyncErr) {
+        console.error("[createSettlement] HRMS sync error:", hrmsSyncErr.message);
+      }
+    } else if (settlementType === "CLAIM") {
+      try {
+        const callerName = req.user?.name || req.user?.email || "Accounting User";
+        const claimIds = payables.map((p) => p.sourceId).filter(Boolean);
+        const claimNumbers = payables.map((p) => p.paymentId).filter(Boolean);
+        const employeeIds = payables.map((p) => p.employeeId).filter(Boolean);
+
+        hrmsSync = await notifyHrmsClaimPaid({
+          claimIds,
+          claimNumbers,
+          employeeIds,
+          bankReference: String(bankReference).trim(),
+          paymentDate: date,
+          paidBy: callerName,
+          notes: `Settled in Accounting software (${journal?.number || ""})`,
+        });
+      } catch (hrmsSyncErr) {
+        console.error("[createSettlement] HRMS claim sync error:", hrmsSyncErr.message);
+      }
+    }
+
+    res.status(201).json({ success: true, status: "POSTED", data: journal, hrmsSync });
   } catch (error) {
+    console.error("[createSettlement] Error:", error.message, error.statusCode, error.code);
     if (error.statusCode) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
     if (error?.code === 11000) {
       const Settlement = await getEmployeeSettlementModel();
-      const existing = await Settlement.findOne({ eventId }).lean();
+      const existing = await Settlement.findOne({ eventId: resolvedEventId }).lean();
       if (existing) {
         if (existing.payloadHash !== payloadHash) {
           return res.status(409).json({ success: false, code: "IDEMPOTENCY_CONFLICT", message: "Settlement event ID was reused with a different payload" });
