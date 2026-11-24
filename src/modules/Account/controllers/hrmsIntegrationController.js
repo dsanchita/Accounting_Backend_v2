@@ -85,6 +85,136 @@ export const notifyHrmsPayrollPaid = async ({
 };
 
 /**
+ * Notifies HRMS that a payroll payment has been reversed in Accounting software.
+ * HRMS verifies HMAC signature and reverts trackers from "Paid" back to "Unpaid".
+ */
+export const notifyHrmsPayrollReversed = async ({
+  trackerIds,
+  paymentIds,
+  employeeIds,
+  payrollRunId,
+  bankReference,
+  reversalDate,
+  reversedBy,
+  notes,
+  allocations,
+}) => {
+  const hrmsUrl = process.env.HRMS_API_URL || "http://localhost:8081";
+  const secret = process.env.HRMS_ACCOUNTING_HMAC_SECRET;
+  if (!secret) {
+    console.warn("[notifyHrmsPayrollReversed] HRMS_ACCOUNTING_HMAC_SECRET not configured, skipping HRMS callback");
+    return null;
+  }
+
+  const endpoint = "/api/v1/external/payroll/mark-unpaid";
+  const body = JSON.stringify({
+    trackerIds,
+    paymentIds,
+    employeeIds,
+    payrollRunId,
+    bankReference,
+    reversalDate,
+    reversedBy,
+    notes,
+    ...(allocations && allocations.length > 0 ? { allocations } : {}),
+  });
+
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const nonce = crypto.randomBytes(24).toString("hex");
+  const signature = signIntegrationRequest({
+    timestamp,
+    nonce,
+    method: "POST",
+    requestPath: endpoint,
+    rawBody: body,
+    secret,
+  });
+
+  try {
+    const res = await fetch(`${hrmsUrl}${endpoint}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-integration-timestamp": timestamp,
+        "x-integration-nonce": nonce,
+        "x-integration-signature": signature,
+      },
+      body,
+    });
+    const data = await res.json();
+    console.log("[notifyHrmsPayrollReversed] HRMS response:", data);
+    return data;
+  } catch (err) {
+    console.error("[notifyHrmsPayrollReversed] Failed to notify HRMS:", err.message);
+    return { success: false, error: err.message };
+  }
+};
+
+/**
+ * Notifies HRMS that an employee claim payment has been reversed in Accounting software.
+ * HRMS verifies HMAC signature and reverts claims from "paid" back to "approved".
+ */
+export const notifyHrmsClaimReversed = async ({
+  claimIds,
+  claimNumbers,
+  employeeIds,
+  bankReference,
+  reversalDate,
+  reversedBy,
+  notes,
+  allocations,
+}) => {
+  const hrmsUrl = process.env.HRMS_API_URL || "http://localhost:8081";
+  const secret = process.env.HRMS_ACCOUNTING_HMAC_SECRET;
+  if (!secret) {
+    console.warn("[notifyHrmsClaimReversed] HRMS_ACCOUNTING_HMAC_SECRET not configured, skipping HRMS callback");
+    return null;
+  }
+
+  const endpoint = "/api/v1/external/claims/mark-unpaid";
+  const body = JSON.stringify({
+    claimIds,
+    claimNumbers,
+    employeeIds,
+    bankReference,
+    reversalDate,
+    reversedBy,
+    notes,
+    ...(allocations && allocations.length > 0 ? { allocations } : {}),
+  });
+
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const nonce = crypto.randomBytes(24).toString("hex");
+  const signature = signIntegrationRequest({
+    timestamp,
+    nonce,
+    method: "POST",
+    requestPath: endpoint,
+    rawBody: body,
+    secret,
+  });
+
+  try {
+    const res = await fetch(`${hrmsUrl}${endpoint}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-integration-timestamp": timestamp,
+        "x-integration-nonce": nonce,
+        "x-integration-signature": signature,
+      },
+      body,
+    });
+    const data = await res.json();
+    console.log("[notifyHrmsClaimReversed] HRMS response:", data);
+    return data;
+  } catch (err) {
+    console.error("[notifyHrmsClaimReversed] Failed to notify HRMS:", err.message);
+    return { success: false, error: err.message };
+  }
+};
+
+/**
  * Notifies HRMS that employee claims have been settled in Accounting software.
  * HRMS verifies HMAC signature and marks claims as "paid".
  */
@@ -1595,7 +1725,7 @@ export const getExecutiveDuesReport = async (req, res, next) => {
     const journalMap = new Map(journals.map((j) => [String(j._id), j]));
 
     // Fetch related Settlements for this company
-    const settlements = await Settlement.find({ companyId }).sort({ paymentDate: -1 }).lean();
+    const settlements = await Settlement.find({ companyId, isReversed: { $ne: true } }).sort({ paymentDate: -1 }).lean();
     const settlementAllocationMap = new Map();
     for (const s of settlements) {
       for (const alloc of s.allocations || []) {
@@ -2308,6 +2438,8 @@ export const reverseSettlement = async (req, res, next) => {
             journalLineId: savedLines[index]._id,
           });
         }
+        original.isReversed = true;
+        original.reversalJournalId = created._id;
         await original.save({ session });
         const [savedReversal] = await Settlement.create([{
           companyId,
@@ -2328,10 +2460,50 @@ export const reverseSettlement = async (req, res, next) => {
         created.approvedBy = req.user?.id || req.user?._id?.toString() || "Accounting User";
         created.approvalDate = new Date();
         await created.save({ session });
-        response = { _id: created._id, number: created.number, reversalId: savedReversal._id };
+        response = {
+          _id: created._id,
+          number: created.number,
+          reversalId: savedReversal._id,
+          originalType: original.settlementType,
+          originalReference: original.bankReference,
+          reversalAllocations: allocationUpdates.map((u) => ({
+            payable: u.payable,
+            amount: u.amount,
+          })),
+        };
       });
     } finally {
       await session.endSession();
+    }
+
+    // Notify HRMS of reversal
+    try {
+      const callerName = req.user?.name || req.user?.email || "Accounting User";
+      if (response?.originalType === "PAYROLL") {
+        const payables = (response.reversalAllocations || []).map((a) => a.payable);
+        await notifyHrmsPayrollReversed({
+          paymentIds: payables.map((p) => p.paymentId).filter(Boolean),
+          employeeIds: payables.map((p) => p.employeeId).filter(Boolean),
+          payrollRunId: payables.map((p) => p.sourceId).filter(Boolean)[0],
+          bankReference: response.originalReference,
+          reversalDate: date,
+          reversedBy: callerName,
+          notes: `Reversed in Accounting software (${response.number})`,
+        });
+      } else if (response?.originalType === "CLAIM") {
+        const payables = (response.reversalAllocations || []).map((a) => a.payable);
+        await notifyHrmsClaimReversed({
+          claimIds: payables.map((p) => p.sourceId).filter(Boolean),
+          claimNumbers: payables.map((p) => p.paymentId).filter(Boolean),
+          employeeIds: payables.map((p) => p.employeeId).filter(Boolean),
+          bankReference: response.originalReference,
+          reversalDate: date,
+          reversedBy: callerName,
+          notes: `Reversed in Accounting software (${response.number})`,
+        });
+      }
+    } catch (hrmsSyncErr) {
+      console.error("[reverseSettlement] HRMS sync error:", hrmsSyncErr.message);
     }
     res.status(201).json({ success: true, status: "POSTED", data: response });
   } catch (error) {

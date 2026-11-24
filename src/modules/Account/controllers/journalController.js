@@ -26,6 +26,8 @@ import { getJournalModel } from "../models/Journal.js";
 import { getPaymentModel } from "../models/Payment.js";
 import { getInvoiceByIdRepo, updateInvoiceRepo } from "../../Invoice/repos/invoiceRepo.js";
 import { notifyCompanyAdmins, emitNotification } from "../../../utils/notificationEmitter.js";
+import { getEmployeePayableModel, getEmployeeSettlementModel } from "../models/EmployeePayable.js";
+import { notifyHrmsPayrollReversed, notifyHrmsClaimReversed } from "./hrmsIntegrationController.js";
 
 
 const VALID_VOUCHER_TYPES = ["SALES", "PURCHASE", "PAYMENT", "RECEIPT", "CONTRA", "JOURNAL"];
@@ -854,6 +856,98 @@ export const reverseJournal = async (req, res, next) => {
 
     // Mark original as reversed
     await updateJournalRepo(id, { isReversed: true });
+
+    // Handle HRMS Employee Settlement Reversal (Payroll & Claim payments)
+    try {
+      const Settlement = await getEmployeeSettlementModel();
+      const settlement = await Settlement.findOne({
+        $or: [{ journalId: id }, { eventId: originalJournal.sourceId }],
+        isReversal: { $ne: true },
+      });
+
+      if (settlement || originalJournal.sourceType === "HRMS_SETTLEMENT") {
+        const Payable = await getEmployeePayableModel();
+        const allocs = settlement?.allocations || [];
+
+        // 1. Roll back each EmployeePayable's settledAmountMinorUnits and status
+        const payablesToRevert = [];
+        for (const alloc of allocs) {
+          const payable = await Payable.findById(alloc.payableId);
+          if (payable) {
+            const amountToRevert = alloc.amountMinorUnits || 0;
+            const currentSettled = payable.settledAmountMinorUnits || 0;
+            const newSettledAmount = Math.max(0, currentSettled - amountToRevert);
+            const newStatus = newSettledAmount === 0 ? "OPEN" : "PARTIAL";
+
+            await Payable.findByIdAndUpdate(payable._id, {
+              $inc: { settledAmountMinorUnits: -amountToRevert },
+              $set: { status: newStatus },
+            });
+            payablesToRevert.push({ payable, amountToRevert });
+          }
+        }
+
+        // 2. Mark Settlement document as reversed
+        if (settlement) {
+          await Settlement.findByIdAndUpdate(settlement._id, {
+            $set: {
+              isReversed: true,
+              reversalJournalId: reversedJournal._id,
+            },
+          });
+        }
+
+        // 3. Notify HRMS to revert the payroll or claim status back to Unpaid / Approved
+        const callerName = req.user?.name || req.user?.email || "Accounting User";
+        const settlementType =
+          settlement?.settlementType ||
+          (originalJournal.narration?.toLowerCase().includes("claim") ? "CLAIM" : "PAYROLL");
+
+        if (settlementType === "PAYROLL") {
+          const paymentIds = payablesToRevert.map((p) => p.payable.paymentId).filter(Boolean);
+          const employeeIds = payablesToRevert.map((p) => p.payable.employeeId).filter(Boolean);
+          const payrollRunIds = [...new Set(payablesToRevert.map((p) => p.payable.sourceId).filter(Boolean))];
+
+          await notifyHrmsPayrollReversed({
+            paymentIds,
+            employeeIds,
+            payrollRunId: payrollRunIds[0],
+            bankReference: originalJournal.bankReference || originalJournal.referenceNumber || originalJournal.number,
+            reversalDate: new Date(),
+            reversedBy: callerName,
+            notes: `Payment reversed via journal reversal in Accounting (${reversedJournal.number})`,
+            allocations: payablesToRevert.map((p) => ({
+              employeeId: p.payable.employeeId,
+              paymentId: p.payable.paymentId,
+              sourceId: p.payable.sourceId,
+              amountReversedMinorUnits: p.amountToRevert,
+            })),
+          });
+        } else if (settlementType === "CLAIM") {
+          const claimIds = payablesToRevert.map((p) => p.payable.sourceId).filter(Boolean);
+          const claimNumbers = payablesToRevert.map((p) => p.payable.paymentId).filter(Boolean);
+          const employeeIds = payablesToRevert.map((p) => p.payable.employeeId).filter(Boolean);
+
+          await notifyHrmsClaimReversed({
+            claimIds,
+            claimNumbers,
+            employeeIds,
+            bankReference: originalJournal.bankReference || originalJournal.referenceNumber || originalJournal.number,
+            reversalDate: new Date(),
+            reversedBy: callerName,
+            notes: `Payment reversed via journal reversal in Accounting (${reversedJournal.number})`,
+            allocations: payablesToRevert.map((p) => ({
+              employeeId: p.payable.employeeId,
+              claimId: p.payable.sourceId,
+              claimNumber: p.payable.paymentId,
+              amountReversedMinorUnits: p.amountToRevert,
+            })),
+          });
+        }
+      }
+    } catch (hrmsRevertErr) {
+      console.error("Error reverting HRMS settlement during journal reversal:", hrmsRevertErr);
+    }
 
     // Handle Invoice Payment Reversal if sourceType is PAYMENT
     if (originalJournal.sourceType === "PAYMENT") {

@@ -58,6 +58,8 @@ const employeeSettlementSchema = new mongoose.Schema(
     allocations: { type: [settlementAllocationSchema], required: true },
     isReversal: { type: Boolean, default: false },
     reversesSettlementId: { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
+    isReversed: { type: Boolean, default: false },
+    reversalJournalId: { type: mongoose.Schema.Types.ObjectId, default: null },
     createdBy: { type: String, required: true },
   },
   { timestamps: true }
