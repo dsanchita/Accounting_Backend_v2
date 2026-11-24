@@ -31,6 +31,7 @@ export const notifyHrmsPayrollPaid = async ({
   paymentDate,
   paidBy,
   notes,
+  allocations,
 }) => {
   const hrmsUrl = process.env.HRMS_API_URL || "http://localhost:8081";
   const secret = process.env.HRMS_ACCOUNTING_HMAC_SECRET;
@@ -49,6 +50,7 @@ export const notifyHrmsPayrollPaid = async ({
     paymentDate,
     paidBy,
     notes,
+    ...(allocations && allocations.length > 0 ? { allocations } : {}),
   });
 
   const timestamp = Math.floor(Date.now() / 1000).toString();
@@ -94,6 +96,7 @@ export const notifyHrmsClaimPaid = async ({
   paymentDate,
   paidBy,
   notes,
+  allocations,
 }) => {
   const hrmsUrl = process.env.HRMS_API_URL || "http://localhost:8081";
   const secret = process.env.HRMS_ACCOUNTING_HMAC_SECRET;
@@ -111,6 +114,7 @@ export const notifyHrmsClaimPaid = async ({
     paymentDate,
     paidBy,
     notes,
+    ...(allocations && allocations.length > 0 ? { allocations } : {}),
   });
 
   const timestamp = Math.floor(Date.now() / 1000).toString();
@@ -1856,7 +1860,7 @@ export const createSettlement = async (req, res, next) => {
       const payable = payableById.get(String(allocation.payableId));
       const amount = toMinorUnits(allocation.amountMinorUnits, "Settlement allocation");
       const remaining = payable.originalAmountMinorUnits - payable.settledAmountMinorUnits;
-      if (!amount || amount > remaining) throw integrationError(`Settlement exceeds remaining payable for ${payable.employeeName}`);
+      if (!amount || amount <= 0) throw integrationError(`Settlement amount must be positive for ${payable.employeeName}`);
       totalMinorUnits += amount;
       lines.push(makeLine(
         await accountById(Account, payable.accountId, companyId, "Payable control account", "Liability"),
@@ -1919,12 +1923,11 @@ export const createSettlement = async (req, res, next) => {
               _id: payable._id,
               companyId,
               settledAmountMinorUnits: payable.settledAmountMinorUnits,
-              originalAmountMinorUnits: { $gte: payable.settledAmountMinorUnits + amount },
             },
             {
               $inc: { settledAmountMinorUnits: amount },
               $set: {
-                status: payable.settledAmountMinorUnits + amount === payable.originalAmountMinorUnits ? "SETTLED" : "PARTIAL",
+                status: payable.settledAmountMinorUnits + amount >= payable.originalAmountMinorUnits ? "SETTLED" : "PARTIAL",
               },
             },
             { new: true, session }
@@ -1968,6 +1971,26 @@ export const createSettlement = async (req, res, next) => {
         const employeeIds = payables.map((p) => p.employeeId).filter(Boolean);
         const payrollRunIds = [...new Set(payables.map((p) => p.sourceId).filter(Boolean))];
 
+        const payrollAllocations = normalizedAllocations.map(({ payable, amount }) => {
+          const due = payable.originalAmountMinorUnits - payable.settledAmountMinorUnits;
+          const discrepancy = amount - due;
+          return {
+            employeeId: payable.employeeId,
+            paymentId: payable.paymentId,
+            sourceId: payable.sourceId,
+            amountPaidMinorUnits: amount,
+            amountDueMinorUnits: due,
+            originalAmountMinorUnits: payable.originalAmountMinorUnits,
+            discrepancyMinorUnits: discrepancy,
+            discrepancyType: discrepancy < 0 ? "UNDERPAID" : discrepancy > 0 ? "OVERPAID" : "EXACT",
+          };
+        });
+
+        const hasDiscrepancy = payrollAllocations.some((a) => a.discrepancyType !== "EXACT");
+        const discrepancyNotes = hasDiscrepancy
+          ? ` [Custom amounts: ${payrollAllocations.filter((a) => a.discrepancyType !== "EXACT").map((a) => `${a.discrepancyType} by ₹${(Math.abs(a.discrepancyMinorUnits) / 100).toFixed(2)}`).join(", ")}]`
+          : "";
+
         hrmsSync = await notifyHrmsPayrollPaid({
           paymentIds,
           employeeIds,
@@ -1975,7 +1998,8 @@ export const createSettlement = async (req, res, next) => {
           bankReference: String(bankReference).trim(),
           paymentDate: date,
           paidBy: callerName,
-          notes: `Settled in Accounting software (${journal?.number || ""})`,
+          notes: `Settled in Accounting software (${journal?.number || ""})${discrepancyNotes}`,
+          allocations: payrollAllocations,
         });
       } catch (hrmsSyncErr) {
         console.error("[createSettlement] HRMS sync error:", hrmsSyncErr.message);
@@ -1987,6 +2011,21 @@ export const createSettlement = async (req, res, next) => {
         const claimNumbers = payables.map((p) => p.paymentId).filter(Boolean);
         const employeeIds = payables.map((p) => p.employeeId).filter(Boolean);
 
+        const claimAllocations = normalizedAllocations.map(({ payable, amount }) => {
+          const due = payable.originalAmountMinorUnits - payable.settledAmountMinorUnits;
+          const discrepancy = amount - due;
+          return {
+            employeeId: payable.employeeId,
+            claimId: payable.sourceId,
+            claimNumber: payable.paymentId,
+            amountPaidMinorUnits: amount,
+            amountDueMinorUnits: due,
+            originalAmountMinorUnits: payable.originalAmountMinorUnits,
+            discrepancyMinorUnits: discrepancy,
+            discrepancyType: discrepancy < 0 ? "UNDERPAID" : discrepancy > 0 ? "OVERPAID" : "EXACT",
+          };
+        });
+
         hrmsSync = await notifyHrmsClaimPaid({
           claimIds,
           claimNumbers,
@@ -1995,6 +2034,7 @@ export const createSettlement = async (req, res, next) => {
           paymentDate: date,
           paidBy: callerName,
           notes: `Settled in Accounting software (${journal?.number || ""})`,
+          allocations: claimAllocations,
         });
       } catch (hrmsSyncErr) {
         console.error("[createSettlement] HRMS claim sync error:", hrmsSyncErr.message);
