@@ -877,13 +877,25 @@ export const reverseJournal = async (req, res, next) => {
             const amountToRevert = alloc.amountMinorUnits || 0;
             const currentSettled = payable.settledAmountMinorUnits || 0;
             const newSettledAmount = Math.max(0, currentSettled - amountToRevert);
-            const newStatus = newSettledAmount === 0 ? "OPEN" : "PARTIAL";
+            const newStatus =
+              newSettledAmount === 0
+                ? "OPEN"
+                : newSettledAmount >= payable.originalAmountMinorUnits
+                ? "SETTLED"
+                : "PARTIAL";
 
             await Payable.findByIdAndUpdate(payable._id, {
-              $inc: { settledAmountMinorUnits: -amountToRevert },
-              $set: { status: newStatus },
+              $set: {
+                settledAmountMinorUnits: newSettledAmount,
+                status: newStatus,
+              },
             });
-            payablesToRevert.push({ payable, amountToRevert });
+            payablesToRevert.push({
+              payable,
+              amountToRevert,
+              newSettledAmount,
+              newStatus,
+            });
           }
         }
 
@@ -921,6 +933,13 @@ export const reverseJournal = async (req, res, next) => {
               paymentId: p.payable.paymentId,
               sourceId: p.payable.sourceId,
               amountReversedMinorUnits: p.amountToRevert,
+              totalSettledMinorUnits: p.newSettledAmount,
+              remainingAfterMinorUnits: Math.max(
+                0,
+                p.payable.originalAmountMinorUnits - p.newSettledAmount
+              ),
+              originalAmountMinorUnits: p.payable.originalAmountMinorUnits,
+              settlementStatus: p.newStatus,
             })),
           });
         } else if (settlementType === "CLAIM") {

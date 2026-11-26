@@ -36,11 +36,15 @@ export const reconcilePayrollEmployee = (employee) => {
 
 export const assertJournalBalanced = (lines) => {
   const amountInMinorUnits = (value, label) => {
-    const minorUnits = Number(value || 0) * 100;
-    if (!Number.isSafeInteger(minorUnits)) {
+    const num = Number(value || 0);
+    if (!Number.isFinite(num) || num < 0) {
+      throw ruleError(`${label} must be a non-negative amount`, "INVALID_AMOUNT");
+    }
+    const rounded = Math.round(num * 100);
+    if (Math.abs(num * 100 - rounded) > 1e-4) {
       throw ruleError(`${label} must have no more than two decimal places`, "INVALID_AMOUNT");
     }
-    return toMinorUnits(minorUnits, label);
+    return toMinorUnits(rounded, label);
   };
   const debitMinorUnits = lines.reduce(
     (sum, line) => sum + amountInMinorUnits(line.debitAmount, "Journal debit"),

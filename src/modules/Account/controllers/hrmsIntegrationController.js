@@ -2102,23 +2102,39 @@ export const createSettlement = async (req, res, next) => {
         const payrollRunIds = [...new Set(payables.map((p) => p.sourceId).filter(Boolean))];
 
         const payrollAllocations = normalizedAllocations.map(({ payable, amount }) => {
-          const due = payable.originalAmountMinorUnits - payable.settledAmountMinorUnits;
+          const due = payable.originalAmountMinorUnits - (payable.settledAmountMinorUnits || 0);
+          const totalSettledMinorUnits = (payable.settledAmountMinorUnits || 0) + amount;
+          const remainingAfterMinorUnits = Math.max(
+            0,
+            payable.originalAmountMinorUnits - totalSettledMinorUnits
+          );
+          const isFullySettled = totalSettledMinorUnits >= payable.originalAmountMinorUnits;
           const discrepancy = amount - due;
           return {
             employeeId: payable.employeeId,
             paymentId: payable.paymentId,
             sourceId: payable.sourceId,
             amountPaidMinorUnits: amount,
+            totalSettledMinorUnits,
             amountDueMinorUnits: due,
+            remainingAfterMinorUnits,
             originalAmountMinorUnits: payable.originalAmountMinorUnits,
             discrepancyMinorUnits: discrepancy,
             discrepancyType: discrepancy < 0 ? "UNDERPAID" : discrepancy > 0 ? "OVERPAID" : "EXACT",
+            isFullySettled,
+            settlementStatus: isFullySettled ? "SETTLED" : "PARTIAL",
           };
         });
 
         const hasDiscrepancy = payrollAllocations.some((a) => a.discrepancyType !== "EXACT");
         const discrepancyNotes = hasDiscrepancy
-          ? ` [Custom amounts: ${payrollAllocations.filter((a) => a.discrepancyType !== "EXACT").map((a) => `${a.discrepancyType} by ₹${(Math.abs(a.discrepancyMinorUnits) / 100).toFixed(2)}`).join(", ")}]`
+          ? ` [Custom amounts: ${payrollAllocations
+              .filter((a) => a.discrepancyType !== "EXACT")
+              .map(
+                (a) =>
+                  `${a.discrepancyType} by ₹${(Math.abs(a.discrepancyMinorUnits) / 100).toFixed(2)} (${a.isFullySettled ? "Full payment completed" : `₹${(a.remainingAfterMinorUnits / 100).toFixed(2)} still due`})`
+              )
+              .join(", ")}]`
           : "";
 
         hrmsSync = await notifyHrmsPayrollPaid({
@@ -2480,7 +2496,8 @@ export const reverseSettlement = async (req, res, next) => {
     try {
       const callerName = req.user?.name || req.user?.email || "Accounting User";
       if (response?.originalType === "PAYROLL") {
-        const payables = (response.reversalAllocations || []).map((a) => a.payable);
+        const revAllocs = response.reversalAllocations || [];
+        const payables = revAllocs.map((a) => a.payable);
         await notifyHrmsPayrollReversed({
           paymentIds: payables.map((p) => p.paymentId).filter(Boolean),
           employeeIds: payables.map((p) => p.employeeId).filter(Boolean),
@@ -2489,6 +2506,24 @@ export const reverseSettlement = async (req, res, next) => {
           reversalDate: date,
           reversedBy: callerName,
           notes: `Reversed in Accounting software (${response.number})`,
+          allocations: revAllocs.map(({ payable, amount }) => {
+            const newSettledMinorUnits = Math.max(0, (payable.settledAmountMinorUnits || 0) - amount);
+            const remainingAfterMinorUnits = Math.max(0, payable.originalAmountMinorUnits - newSettledMinorUnits);
+            return {
+              employeeId: payable.employeeId,
+              paymentId: payable.paymentId,
+              sourceId: payable.sourceId,
+              amountReversedMinorUnits: amount,
+              totalSettledMinorUnits: newSettledMinorUnits,
+              remainingAfterMinorUnits,
+              originalAmountMinorUnits: payable.originalAmountMinorUnits,
+              settlementStatus: newSettledMinorUnits === 0
+                ? "OPEN"
+                : newSettledMinorUnits >= payable.originalAmountMinorUnits
+                ? "SETTLED"
+                : "PARTIAL",
+            };
+          }),
         });
       } else if (response?.originalType === "CLAIM") {
         const payables = (response.reversalAllocations || []).map((a) => a.payable);
